@@ -1,0 +1,103 @@
+#!/usr/bin/env perl
+# get geo info for a given ip
+# moodfarm@cpan.org
+
+use 5.014;
+
+use strict;
+use warnings;
+
+use App::Basis;
+use Geo::IP;
+use DateTime;
+use DateTime::TimeZone;
+use Data::Printer ;
+
+# ----------------------------------------------------------------------------
+
+my $VERSION = '0.4';
+
+# ----------------------------------------------------------------------------
+
+sub show_details {
+    my ( $geo, $ip_name, $csv, $coords ) = @_;
+
+    my $record = $geo->record_by_name($ip_name);
+
+    if ( !$record ) {
+        say STDERR "$ip_name: Failed to find info for ip address";
+        return ;
+    }
+
+    if ($csv) {
+        say join( ',', $ip_name, $record->country_code3, $record->city, $record->latitude, $record->longitude, $record->latitude . ":" . $record->longitude );
+    }
+    else {
+        # with the lite database we do not get postcode, we may not need it
+        # but we could do a 2nd lookup to get this from the lat/long on another system
+        # show the valid info we can get
+        print $ip_name . ': ' . $record->country_code3 . ', ' . $record->city;
+        print ', (' . $record->latitude . ', ' . $record->longitude . ')' if ($coords);
+        print "\n";
+
+        say "timezone " . $record->time_zone;
+        my $tz     = DateTime::TimeZone->new( name => $record->time_zone );
+        my $dt     = DateTime->now();
+        my $offset = ( $tz->offset_for_datetime($dt) );
+        say "tz offset is " . ( $offset / 3600 );
+        say "region is " . $record->country_code . "," . $record->region;
+    }
+}
+# ----------------------------------------------------------------------------
+# main
+# ----------------------------------------------------------------------------
+# main
+my %opt = init_app(
+    help_text    => 'get Geo location information about an ip address or name',
+    help_cmdline => 'ip address or name',
+    options      => {
+        'coords|c' => 'Output lat/long coords too',
+        'csv'      => 'output data as csv',
+        'header'   => 'print csv header',
+        'file|f=s'   => 'file to read IP addresses from'
+    }
+);
+
+if ( $opt{header} && !$opt{csv} ) {
+    say STDERR "header option should only be used with csv option";
+}
+
+my $ip_name = $ARGV[0];
+show_usage('Missing ip address or name') if ( !$ip_name && !$opt{file} );
+
+if ( $opt{file} ) {
+    $opt{file} =~ s/^~/$ENV{HOME}/;
+    msg_exit( "file $opt{file} does not exist", 2 ) if ( !-f $opt{file} );
+}
+
+my $config = get_config();
+msg_exit( 'geoip entry missing from config.', 1 ) if ( !$config->{geoip} );
+msg_exit( 'geoip entry not valid file.',      1 ) if ( !-f $config->{geoip} );
+
+# if it is to be a long running app we can load it into memory use GEOIP_MEMORY_CACHE
+# my $geo = Geo::IP->open( $config->{geoip}, GEOIP_STANDARD );
+
+my $geo = Geo::IP->open( $config->{geoip}, GEOIP_MEMORY_CACHE | GEOIP_CHECK_CACHE | GEOIP_INDEX_CACHE) ;
+
+say join( ',', qw(ip country city latitude longitude latlon) ) if ( $opt{header} );
+if ($ip_name) {
+    show_details( $geo, $ip_name, $opt{csv}, $opt{coords} );
+}
+else {
+    open( my $data, "<", $opt{file} ) || msg_exit( "cannot open $opt{file}: $!", 2 );
+
+    while (<$data>) {
+        my $line = $_;
+        chomp $line;
+        # get the first thing on the line that approximates an IP address
+        my ($ip) = ( $line =~ /(\d{1,3}\.\d{1,3}.\d{1,3}.\d{1,3})/ );
+        next if ( !$ip );
+
+        show_details( $geo, $ip, $opt{csv}, $opt{coords} );
+    }
+}

@@ -1,0 +1,120 @@
+#!/usr/bin/env perl
+# quick script to take a csv file that has Meteo locations (number at start of line)
+# and figure out information about that location (lat/long, name)
+# v0.1 kevin Mulhollandmoodfarm@cpan.org
+
+use 5.14.0;
+use strict;
+use warnings;
+use App::Basis;
+use Data::Printer;
+use Furl;
+use Geo::Coder::Google;
+use Geo::Coder::OSM;
+use CHI;
+use Path::Tiny;
+use Try::Tiny;
+use Locale::Country;
+use utf8::all ;
+
+# -----------------------------------------------------------------------------
+my $METEO_BASE = 'http://www.meteo24.nl/uk/index.php?q=detailsite&vis=overview&mystation=';
+my $geo        = "osm";
+my $seperator  = '|';
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text    => "Obtain information for Meteo location IDs",
+    help_cmdline => "meteo_locations_file
+$program /tmp/InviewForecastSites30-05-2012.csv
+",
+    options => { 'verbose|v' => 'Verbose output', }
+);
+
+my $filename = $ARGV[0];
+
+show_usage("Bad or missing file") if ( !$filename || !-f $filename );
+
+if ( $opt{verbose} ) {
+    my $prog = get_program();
+    debug("prog is '$prog'");
+}
+
+my $cache = CHI->new(
+    driver   => 'File',
+    root_dir => "/tmp/" . get_program() . ".cache"
+);
+
+my $geocoder = ( $geo eq 'osm' ) ? Geo::Coder::OSM->new( sources => [ 'osm', 'mapquest' ] ) : Geo::Coder::Google->new( apiver => 3, language => 'en' );
+my $location;
+my @data = split( /\n/, path("$filename")->slurp );
+show_usage("Not enough data in file") if ( @data < 2 );
+
+my $furl = Furl->new(
+    agent   => 'MyGreatUA/2.0',
+    timeout => 10,
+);
+
+my $count = 0;
+my $found;
+say join( $seperator, qw{id latitude longitude location country country_code} );
+foreach my $line (@data) {
+    next if ( !$count++ );    # discard the header
+
+    my ($id) = ( $line =~ /^(\d+),/ );
+    next if ( !$id );
+
+    my ( $content, $data );
+    my ( $code, $country ) = ( "", "" );
+    if ( !( $data = $cache->get($id) ) ) {
+        my $res = $furl->get("$METEO_BASE$id");
+        if ( $res->is_success ) {
+            $data->{content} = $res->content;
+            ( $data->{loc} )       = ( $data->{content} =~ /<B>weather station:&nbsp;(.*?)&nbsp;/gsm );
+            ( $data->{longitude} ) = ( $data->{content} =~ /<font class="tablehead"><B>&nbsp;longitude: &nbsp;<\/B>(.*?)&deg;/gsm );
+            ( $data->{latitude} )  = ( $data->{content} =~ /<font class="tablehead"><B>&nbsp;latitude: &nbsp;<\/B>(.*?)&deg;/gsm );
+            $cache->set( $id, $data, 'never' );
+        }
+    }
+
+    if ( $data->{content} ) {
+        $found++;
+        try {
+            my $latlng = "$data->{latitude},$data->{longitude}";
+            if ( !( $location = $cache->get("$geo-$latlng") ) ) {
+                $location = $geocoder->reverse_geocode( latlng => $latlng );
+                $cache->set( "$geo-$latlng", $location, 'never' );
+            }
+
+            if ( $location->{address_components} ) {    # if using google
+                foreach my $l ( @{ $location->{address_components} } ) {
+                    next if ( $l->{types}[0] ne 'country' );
+                    $country = $l->{long_name};
+                    $code    = $l->{short_name};
+                    last;
+                }
+            }
+            else {                                      # OSM
+                if ( $location->{address} ) {
+                    $code    = $location->{address}->{country_code} || "" ;
+                    $country = code2country($code) || "";
+                    $code = uc( $code) ;
+                }
+            }
+        }
+        catch {
+            say STDERR "$_";
+        };
+
+        sleep(1) if ( !$found % 100 );                  # do some rate limiting
+
+        my $out = join( $seperator, ( $id, $data->{latitude}, $data->{longitude}, $data->{loc}, $country, $code ) ) ;
+        say $out;
+        # say STDERR "$found: $out";
+    }
+}
+

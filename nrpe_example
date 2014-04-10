@@ -1,0 +1,21 @@
+#!/bin/bash
+# Simple Bash Script To Check Directory File Count
+# Nagios Plugin For NRPE
+# Created for www.question-defense.org originally
+# Described More >> http://link.as/age
+OK_STATE=0
+WARNING_STATE=1
+CRITICAL_STATE=2
+file_count=0
+file_count=`ls /home/some/project/files/ | wc -l`
+if [ $file_count -gt 15 ] then
+    echo "WARNING:" $file_count "files"
+    exit $WARNING_STATE
+elsif [ $file_count -gt 25 ]
+then
+    echo "CRITICAL:" $file_count "files"
+    exit $CRITICAL_STATE
+fi
+echo "OK:" $file_count "files"
+exit $OK_STATE
+

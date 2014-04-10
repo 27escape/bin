@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# make use things in case we run from crontab
+PATH=$PATH:$HOME/bin:$HOME/src
+source ~/perl5/perlbrew/etc/bashrc
+
+WATCH_DIR="$HOME/Dropbox/Markdown"
+
+if [ "$1" != "" ] ; then
+  if [ -d $1 ] ; then 
+    WATCH_DIR=$1
+  fi
+fi
+
+echo "Watching $WATCH_DIR"
+whenmd --dir=$WATCH_DIR --daemon --verbose 2>&1 >>/tmp/when.log

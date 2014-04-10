@@ -1,0 +1,342 @@
+#!/usr/bin/env perl 
+# play with data to visualise things
+
+# kmulholland, moodfarm@cpan.org,  v0.1, 2012-08-08
+
+use 5.014 ;
+use strict ; 
+use warnings ;
+
+use App::Basis ;
+use Data::Printer ;
+use File::Slurp qw( write_file) ;
+use File::Basename ;
+use Spreadsheet::XML_to_XLS ;
+use Try::Tiny ;
+use YAML ;
+
+# ----------------------------------------------------------------------------
+
+my $VERSION     = '0.1' ;
+my $OUTPUT_FILE = "/tmp/data_report.xls" ;
+
+# ----------------------------------------------------------------------------
+# use inline::yaml for the data!
+my $report_data ;
+
+    # <worksheet name="_PLATFORM_NAME_" hide_gridelines="2">
+my $xml_template = <<EOD ;
+<?xml version="1.0"?>
+<!DOCTYPE workbook SYSTEM "xml_to_xls.dtd">
+<workbook>
+    <worksheet hide_gridelines="2">
+        <set bold="yes">
+            <cell color='red'>_TITLE_</cell>
+        </set>
+        <set bold="yes">
+            <cell>Data Created</cell>
+            <cell>_REPORT_DATE_</cell>
+        </set>
+
+        <set bold="yes" row="+1">
+            <cell colspan="5">Report for platform _PLATFORM_ID_</cell>
+        </set>
+
+        <set bold="yes">
+            <cell row="+1" colspan="8" bg_color="silver">Registrations</cell>
+        </set>
+
+        <set row="+1" border="1" border_color="silver" bg_color="#E0E0FF">
+            <cell width="15">Year to date</cell>
+            <cell>_REGISTRATIONS_TO_DATE_</cell>
+        </set>
+        <set  border="1" border_color="silver" bg_color="#C0C0FF">
+            <cell>Month to date</cell>
+            <cell>_REGISTRATIONS_THIS_MONTH_</cell>
+        </set>
+
+         <set bold="yes">
+            <cell row="+1">Year by month</cell>
+            <set type="row" row="+1">
+                <set name="reg_month" border="1">
+                    _YEAR_MONTHS_                   
+                </set>
+                <set name="reg_count" border="1">
+                    _REGISTRATIONS_BY_MONTH_
+                </set>
+            </set>
+        </set>
+
+        <chart pos="_CHART_1_POS_" name="CHART_1" type="column" x="20" width="0.7" height="0.7">
+            <data categories="reg_month" values="reg_count" name="Month"/>
+            <x_axis name="Month"/>
+            <y_axis name="Registrations"/>
+        </chart>
+
+        <set bold="yes" pos="_USAGE_POS_1_">
+            <cell colspan="8" bg_color="silver">STB Usage</cell>
+        </set>
+
+        <set row="+1" border="1" border_color="silver" bg_color="#E0E0FF">
+            <cell width="15">Year to date</cell>
+            <cell>_USAGE_TO_DATE_</cell>
+        </set>
+        <set  border="1" border_color="silver" bg_color="#C0C0FF">
+            <cell>Month to date</cell>
+            <cell>_USAGE_THIS_MONTH_</cell>
+        </set>
+         <set bold="yes">
+            <cell row="+1">Year by month</cell>
+            <set type="row" row="+1">
+                <set name="use_month" border="1">
+                    _YEAR_MONTHS_
+                </set>
+                <set name="use_count" border="1">
+                    _USAGE_BY_MONTH_
+                </set>
+            </set>
+        </set>
+
+        <chart pos="_CHART_2_POS_" name="CHART_2" type="column" x="20" width="0.7" height="0.7">
+            <data categories="use_month" values="use_count" name="Month"/>
+            <x_axis name="Month"/>
+            <y_axis name="Uniq STBs"/>
+        </chart>
+
+        <!-- start page to the right of the first page, should make things 
+        easier as far as layout goes -->
+
+        <set pos="_APP_POS_1_">
+            <set bold="yes">
+                <cell colspan="8" bg_color="silver">Application Usage</cell>
+            </set>
+
+             <set pos="_APP_POS_2_">
+                <cell wrap="yes" width="15" bold="yes">Total year to date</cell>
+                <set type="row">
+                    <set name="app_total_month" border="1">
+                        _APP_NAMES_
+                    </set>
+                    <set name="app_total_count" border="1">
+                        _APP_TO_DATE_            
+                    </set>
+                </set>
+            </set>
+
+            <chart pos="_CHART_3_POS_" name="CHART_3" type="pie" x="20" width="1.0" height="1.0">
+                <data categories="app_total_month" values="app_total_count" name="Month"/>
+            </chart>
+
+            <set pos="_APP_POS_3_">
+                <cell wrap="yes" width="15" bold="yes">Year by month</cell>
+            </set>
+            <set pos="_APP_POS_4_" type="col">
+                <set name="app_month">
+                    <cell></cell><!-- needed to space things out -->
+                    _YEAR_MONTHS_
+                </set>
+                _APP_BY_MONTH_
+            </set>
+
+            <chart pos="_CHART_4_POS_" name="CHART_4" type="column" x="20" width="1.0" height="1.5">
+                <title name="App by month"/>
+                <x_axis name="Months"/>
+                <y_axis name="Uses"/>
+                _CHART_APP_DATA_
+            </chart>
+        </set>
+
+    </worksheet>    
+</workbook>
+
+EOD
+
+# ----------------------------------------------------------------------------
+# main
+my %opt = init_app(
+    help_text => 'Play with some data for reporting',
+    options   => {
+        'file|f=s'  => "YAML report data",
+        'out|o=s'   => "output file (default:$OUTPUT_FILE)",
+        'pdf|p'     => "also create PDF from output",
+        'verbose|v' => "explain whats going on"
+    }
+) ;
+
+# something we need to add to position things correctly
+my $column_offset = 'A' ;
+my $row_offset    = 10 ;    # this is where we start data
+
+$opt{out} ||= $OUTPUT_FILE ;
+$opt{out} =~ s/^~/$ENV{HOME}/ ;
+
+if ( $opt{file} ) {
+    $opt{file} =~ s/^~/$ENV{HOME}/ ;
+
+    show_usage("Input file does not exist - $opt{file}") if ( !-f $opt{file} ) ;
+
+    try {
+        $report_data = YAML::LoadFile( $opt{file} ) ;
+    }
+    catch {
+        show_usage("Bad YAML data in $opt{file} : $@") ;
+    } ;
+} else {
+    show_usage("file option is required") ;
+}
+say "input data: " . p($report_data) if ( $opt{verbose} ) ;
+
+my %replacements = (
+    _TITLE_                    => $report_data->{title},
+    _PLATFORM_NAME_            => $report_data->{platform_name},
+    _PLATFORM_ID_              => $report_data->{platform_id},
+    _REPORT_NOTE_              => $report_data->{report_note},
+    _REPORT_DATE_              => $report_data->{report_date},
+    _REGISTRATIONS_TO_DATE_    => $report_data->{registrations_to_date},
+    _REGISTRATIONS_THIS_MONTH_ => $report_data->{registrations_this_month},
+    _USAGE_TO_DATE_            => $report_data->{usage_to_date},
+    _USAGE_THIS_MONTH_         => $report_data->{usage_this_month}
+) ;
+
+my $out = $xml_template ;
+
+my ( $odd, $even ) = ( "E0E0FF", "#C0C0FF" ) ;
+
+# _YEAR_MONTHS_
+my $months = "" ;
+my $count  = 0 ;
+foreach my $month ( @{ $report_data->{year_months} } ) {
+    my $color = ++$count & 1 ? $even : $odd ;
+    $months .= "<cell border=\"1\" border_color=\"silver\" bg_color=\"$color\">$month</cell>\n" ;
+}
+$row_offset += $count ;
+$replacements{_YEAR_MONTHS_} = $months ;
+
+# _REGISTRATIONS_BY_MONTH_
+$count = 0 ;
+my $values = "" ;
+foreach my $value ( @{ $report_data->{registrations_by_month} } ) {
+    my $color = ++$count & 1 ? $even : $odd ;
+    $values .= "<cell border=\"1\" border_color=\"silver\" bg_color=\"$color\">$value</cell>\n" ;
+}
+$row_offset += $count ;
+$replacements{_REGISTRATIONS_BY_MONTH_} = $values ;
+
+# _CHART_1_POS_
+$replacements{_CHART_1_POS_} = "$column_offset$row_offset" ;
+
+$row_offset += 15 ;
+$replacements{_USAGE_POS_1_} = "$column_offset$row_offset" ;
+
+# _USAGE_BY_MONTH_
+$row_offset += 6 ;
+$count  = 0 ;
+$values = "" ;
+foreach my $value ( @{ $report_data->{usage_by_month} } ) {
+    my $color = ++$count & 1 ? $even : $odd ;
+    $values .= "<cell border=\"1\" border_color=\"silver\" bg_color=\"$color\">$value</cell>\n" ;
+}
+$row_offset += $count ;
+$replacements{_USAGE_BY_MONTH_} = $values ;
+
+# _CHART_2_POS_
+$replacements{_CHART_2_POS_} = "$column_offset$row_offset" ;
+
+# _APP_NAMES_
+$row_offset                = 1 ;
+$column_offset             = 'I' ;
+$row_offset                = 1 ;
+$replacements{_APP_POS_1_} = "$column_offset$row_offset" ;
+$row_offset += 2 ;
+$replacements{_APP_POS_2_} = "$column_offset$row_offset" ;
+$row_offset += 2 ;
+
+$count  = 0 ;
+$values = "" ;
+foreach my $value ( @{ $report_data->{app_names} } ) {
+    my $color = ++$count & 1 ? $even : $odd ;
+    $values .= "<cell border=\"1\" border_color=\"silver\" bg_color=\"$color\">$value</cell>\n" ;
+}
+$row_offset += $count ;
+$replacements{_APP_NAMES_}   = $values ;
+$replacements{_CHART_3_POS_} = "$column_offset$row_offset" ;
+
+# _APP_TO_DATE_
+$row_offset += 7 ;
+my $ncount = 0 ;
+$values = "" ;
+foreach my $value ( @{ $report_data->{app_to_date} } ) {
+    my $color = ++$ncount & 1 ? $even : $odd ;
+    $values .= "<cell border=\"1\" border_color=\"silver\" bg_color=\"$color\">$value</cell>\n" ;
+}
+
+# $row_offset += $count ;
+$replacements{_APP_TO_DATE_} = $values ;
+
+$column_offset             = 'Q' ;
+$row_offset                = 0 ;
+$replacements{_APP_POS_3_} = "$column_offset$row_offset" ;
+$row_offset += 2 ;
+$replacements{_APP_POS_4_} = "$column_offset$row_offset" ;
+
+$row_offset += 14 ;
+
+# _APP_BY_MONTH_
+my $apps          = "" ;
+my $appchart_data = "" ;
+$count = 0 ;
+
+# lets reorder the data so its easier to play with
+
+my %app_data ;
+foreach my $month_data ( @{ $report_data->{app_by_month} } ) {
+    my $j = 0 ;
+    foreach my $v (@$month_data) {
+        my $appname = $report_data->{app_names}->[$j] ;
+        $j++ ;
+        $app_data{$appname} = [] if ( !$app_data{$appname} ) ;
+        push @{ $app_data{$appname} }, $v ;
+    }
+
+}
+foreach my $appname ( sort keys %app_data ) {
+    my $color = ++$count & 1 ? $even : $odd ;
+    $apps
+        .= "<set name=\"$appname\">\n<cell border=\"1\" border_color=\"silver\" bg_color=\"$color\">"
+        . ucfirst($appname)
+        . "</cell>" ;
+    $appchart_data .= "<data categories=\"app_month\" values=\"$appname\" name=\"" . ucfirst($appname) . "\"/>" ;
+    foreach my $mdata ( @{ $app_data{$appname} } ) {
+        $apps .= "<cell border=\"1\" border_color=\"silver\" bg_color=\"$color\">$mdata</cell>" ;
+    }
+    $apps .= "\n</set>\n" ;
+}
+
+$replacements{_APP_BY_MONTH_}   = $apps ;
+$replacements{_CHART_APP_DATA_} = $appchart_data ;
+$column_offset                  = 'Q' ;
+$row_offset                     = 30 ;
+$replacements{_CHART_4_POS_}    = "$column_offset$row_offset" ;
+
+# finally do all the replacements
+foreach my $key ( keys %replacements ) {
+
+    # TODO probably will need to HTML escape these
+    # say "key ---> $key" ;
+    $out =~ s/$key/$replacements{$key}/gsm ;
+}
+
+write_file( "/tmp/data.xml", $out ) ;
+Spreadsheet::XML_to_XLS::build( '', "/tmp/data.xml", $opt{out} ) ;
+say "created $opt{out}" ;
+
+if ( $opt{pdf} ) {
+    my $dir = dirname( $opt{out} ) ;
+    say "Creating PDF" if ( $opt{verbose} ) ;
+    my $cmd = "libreoffice --headless --convert-to pdf:writer_pdf_Export --outdir '$dir' '$opt{out}'" ;
+    say "PDF command: $cmd" if ( $opt{verbose} ) ;
+    system($cmd) ;
+    my $pdf = $opt{out} ;
+    $pdf =~ s/\.xls$/.pdf/ ;
+    say "Created $pdf" if ( -f "$pdf" ) ;
+}

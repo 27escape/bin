@@ -1,0 +1,772 @@
+#!/usr/bin/env perl
+################################################################################
+#
+#  netrun
+#
+#  This program provides a simple interface for running a script across
+#  multiple hosts in parallel.
+#
+#  Author:  David C. Snyder - 12/17/2003
+#  modified: kevin mulholland to add -a option - 2010-01-14
+#
+################################################################################
+
+use Parallel::ForkManager ;
+use Getopt::Std ;
+use File::Copy ;
+use File::Path ;
+use Time::HiRes qw( gettimeofday tv_interval usleep ) ;
+use Socket ;
+use warnings ;
+use strict ;
+
+########################################
+#
+#  Misc Globals
+#
+my %opts ;
+my $ssh = "ssh -x -o BatchMode=yes -o StrictHostKeyChecking=no" ;
+$| = 1 ;    # Make stdout unbuffered
+
+########################################
+#
+#  ssh_host
+#
+#  This subroutine attempts to connect
+#  to port 22 (the SSH port) on the
+#  host given in the parameter list (
+#  or localhost by default).  It then
+#  prints the SSH version string or
+#  other status string to stderr.
+#  It returns undef on failure and
+#  the SSH version string on success.
+#
+sub ssh_host
+{
+  my ( $remote, $port, $iaddr, $paddr, $proto, $line ) ;
+  $remote = shift || 'localhost' ;
+  $port   = 22 ;
+  $iaddr  = inet_aton($remote) or do {
+    warn "SSH CONNECT STATUS:  Could not resolve $remote to an address\n" ;
+    return undef ;
+  } ;
+  $paddr = sockaddr_in( $port, $iaddr ) ;
+  $proto = getprotobyname('tcp') ;
+TRY: eval {
+    $SIG{'ALRM'} = sub { die "connect: timeout\n" } ;
+    alarm $opts{'c'} ;
+    socket( SOCK, PF_INET, SOCK_STREAM, $proto ) or die "socket: $!\n" ;
+    connect( SOCK, $paddr ) or die "connect: $!\n" ;
+    chomp( $line = <SOCK> ) ;
+    print SOCK "quit\r\n" ;
+    close(SOCK) or die "close: $!\n" ;
+    alarm 0 ;
+  } ;
+CATCH: do {
+    chomp($@) ;
+    warn "SSH CONNECT STATUS:  $@\n" ;
+    return undef ;
+  } if $@ ;
+  if ( not defined $line ) {
+    warn "SSH CONNECT STATUS:  connection blocked by hosts.allow?\n" ;
+    return undef ;
+  }
+  if ( $line =~ /^SSH-([\d.]+)-([\w+\d.]+)/ ) {
+    warn "SSH CONNECT STATUS:  $line\n" ;
+    return $line ;
+  } else {
+    warn "SSH CONNECT STATUS:  Failed to read SSH Version for $remote.\n" ;
+    return undef ;
+  }
+}
+
+########################################
+#
+#  fisher_yates_shuffle
+#
+#  This subroutine came from the Perl
+#  Cookbook.  It just randomizes
+#  the elements of an array
+#  in-place.
+#
+sub fisher_yates_shuffle
+{
+  my $array = shift ;
+  return () unless @$array ;
+  for ( my $i = @$array; --$i; ) {
+    my $j = int rand( $i + 1 ) ;
+    next if $i == $j ;
+    @$array[ $i, $j ] = @$array[ $j, $i ] ;
+  }
+}
+
+########################################
+#
+#  by_fields
+#
+#  A reference to this function is
+#  passed to sort to sort results
+#  records by specific fields.  The
+#  names of the fields are defined in
+#  the @fields list.
+#
+my %results ;
+my @fields = qw(
+  SSH_STATUS
+  EXIT_STATUS
+  RUN_TIME
+  OUTPUT_LINES
+  FIRST_LINE
+  ) ;
+
+sub by_fields
+{
+  no warnings ;
+       $results{$a}{EXIT_STATUS} cmp $results{$b}{EXIT_STATUS}
+    or $results{$a}{SSH_STATUS} <=> $results{$b}{SSH_STATUS}
+    or $results{$a}{OUTPUT_LINES} <=> $results{$b}{OUTPUT_LINES}
+    or $results{$a}{RUN_TIME} <=> $results{$b}{RUN_TIME} ;
+}
+
+my @address_list ;
+########################################
+#
+#  lookup_addresses
+#
+#  This function does DNS lookups of
+#  addresses from the global
+#  @address_list.  It accepts a maximum
+#  number of lookups to return (default
+#  is 10) and returns the reverse
+#  lookups as a list.
+#
+sub lookup_addresses
+{
+  my $max = ( shift or 10 ) ;
+  my @names = () ;
+  my ( $iaddr, $name ) ;
+
+  for my $address (@address_list) {
+    if ( $address =~ /^\d+\.\d+\.\d+\.\d+$/ ) {
+      $iaddr = inet_aton($address) ;
+      if ( defined( $name = gethostbyaddr( $iaddr, AF_INET ) ) ) {
+        $name =~ s/([^.]+).*/$1/ ;
+        push @names, $name ;
+      }
+    } else {
+      $address =~ s/([^.]+).*/$1/ ;
+      push @names, $address ;
+    }
+    last if $max <= @names ;
+  }
+  @names ;
+}
+
+=head1 NAME
+
+netrun - run a script over multiple hosts in parallel
+
+=head1 SYNOPSIS
+
+B<netrun>  [B<-hqRS]>] [B<-c> I<connect timeout>] [B<-f> I<max forks>] [B<-i> I<interpreter>] [B<-s> I<script file>] | [B<-e> I<script>] [B<-d> I<data file>] [B<-l> I<login name>] [B<-L> I<log dir>] [B<-t> I<timeout>] hosts ...
+
+=cut
+
+########################################
+#
+#  Parse the command-line
+#
+my $usage =
+    "Usage: $0 [-hqRSa] [-c connect timeout] [-f max forks] "
+  . "[-i interpreter] [-s script file] | [-e script] [-d data file] "
+  . "[-l login name] [-L log dir] [-t timeout] hosts ...\n" ;
+die $usage unless getopts( 'hqRSac:f:i:s:e:d:l:L:t:', \%opts ) ;
+if ( defined $opts{'h'} ) {
+  print "$usage
+\t\t-h : display help
+\t\t-q : quick mode
+\t\t-a : always run, ignore warning if over 24 hosts to process
+\t\t-R : don't randomize the hosts list
+\t\t-S : slow start
+        -c timeout : the SSH connect timeout (default is 15 seconds)
+      -f max forks : maximum number of background processes (default is 25)
+    -i interpreter : use specified interpreter instead of /bin/sh
+    -s script file : local file containing script to run on remote hosts
+         -e script : like -s, but provide the script on the command-line
+      -d data file : append specified data file to script
+     -l login name : specify the user to login as on the remote hosts
+        -L log dir : create log files in log dir instead of ./netrun.PID
+        -t timeout : kill remote script after timeout seconds\n\n" ;
+  exit 0 ;
+}
+die "$0:  Could not read $opts{'s'}\n"
+  if defined $opts{'s'} and not -r $opts{'s'} ;
+die "$0:  Could not read $opts{'d'}\n"
+  if defined $opts{'d'}
+    and $opts{'d'} ne '-'
+    and not -r $opts{'d'} ;
+$opts{'c'} ||= 15 ;    # timeout for connection to port 22
+$opts{'S'} = 250_000 if defined $opts{'S'} ;    # 1/4 second
+my $max_forks   = $opts{'f'} || 25 ;
+my $user        = $opts{'l'} || getpwuid $< ;
+my $interpreter = $opts{'i'} || "/bin/sh" ;
+my $logdir      = $opts{'L'} || "./netrun.$$" ;
+eval { mkpath( [$logdir] ) } ;
+die "$0:  Can't write to $logdir.\n", "Please check permissions or specify a different log directory with -l.\n"
+  unless -w $logdir and -x $logdir ;
+my $first_host = $ARGV[0] ;
+
+########################################
+#
+#  Create list of hosts or addresses
+#  to work on.
+#
+my ( $addr, $host, $hosts ) ;
+while ( $_ = shift ) {
+  if (m{(\d+)\.(\d+)\.(\d+)\.(\d+)/(\d+)}) {
+    $addr = ( $1 << 24 ) + ( $2 << 16 ) + ( $3 << 8 ) + $4 ;
+    $hosts = 2**( 32 - $5 ) ;
+    for ( my $a = $addr; $a < $addr + $hosts; $a++ ) {
+      $host = sprintf( "%d.%d.%d.%d", $a >> 24, ( $a >> 16 ) % 256, ( $a >> 8 ) % 256, $a % 256 ) ;
+      push @address_list, $host ;
+    }
+  } else {
+    $host = $_ ;
+    push @address_list, $host ;
+  }
+}
+die $usage unless @address_list ;
+fisher_yates_shuffle( \@address_list )
+  unless defined $opts{'R'}
+    or defined $opts{'q'} ;
+
+########################################
+#
+#  Make sure that we have an agent
+#  running with keys loaded.
+#
+my $exit_value = ( system "ssh-add -l > /dev/null 2>&1" ) >> 8 ;
+if ( 1 == $exit_value and -t STDIN ) {
+  system "ssh-add" ;
+} elsif ( 0 != $exit_value ) {
+  die "$0:  Could not talk to an ssh-agent.  Run 'ssh-agent \$SHELL' first.\n" ;
+}
+
+########################################
+#
+#  Get confirmation before continuing.
+#
+# use $opts{'a'} to always process even when over 24 hosts
+if ( !$opts{'a'} && -t STDIN and 24 < @address_list ) {
+  print STDERR "\n",
+    "*** THE ACTION YOU ARE ABOUT TO PERFORM MAY IMPACT\n",
+    "*** AS MANY AS ", ( scalar @address_list ),
+    " SYSTEMS!  Here are a few:\n\n",
+    "       ", join( "\n       ", lookup_addresses(10) ), "\n\n",
+    "*** Are you sure that you want to continue? (y/n) : " ;
+  my $ans = <STDIN> ;
+  if ( $ans !~ /^[yY]/ ) {
+    print STDERR "\nYou can thank me later...\n" ;
+    exit 0;
+  }
+}
+
+########################################
+#
+#  Read DATA from stdin if the user
+#  passed '-' as the argument to -d.
+#
+my @data ;
+if ( defined $opts{'d'} and '-' eq $opts{'d'} ) {
+  print STDERR "Gathering DATA from Standard Input:\n" ;
+  @data = <STDIN> ;
+}
+
+########################################
+#
+#  Loop over the addresses and ssh
+#  to the ones that we can reach.
+#
+my $jobs_left            = @address_list ;
+my $hash_count           = 0.0 ;
+my $hashes_displayed     = 0 ;
+my $hashes_per_iteration = 48 / $jobs_left ;
+my $pm                   = new Parallel::ForkManager($max_forks) ;
+$pm->run_on_finish(
+  sub {
+    my ( $pid, $exit_code, $ident ) = @_ ;
+    $hash_count += $hashes_per_iteration ;
+    while ( $hashes_displayed <= int($hash_count) ) {
+      print STDERR '#' ;
+      $hashes_displayed++ ;
+    }
+  }
+) ;
+print STDERR "Progress:  " . "0% |-----------+-----------+-----------+-----------| 100%\n" . "              " ;
+my @hosts = () ;
+while ( defined( $host = shift @address_list ) ) {
+  push @hosts, $host ;
+  usleep( $opts{'S'} ) if defined $opts{'S'} ;    # slow start
+  $pm->start and next ;
+  open STDIN, "< /dev/null" or die "$0:  Redirect /dev/null to STDIN: $!\n" ;
+  open STDOUT, "> $logdir/$host.out"
+    or die "$0:  Redirect STDOUT to $logdir/$host.out: $!\n" ;
+  open STDERR, "> $logdir/$host.err"
+    or die "$0:  Redirect STDERR to $logdir/$host.err: $!\n" ;
+  if ( defined ssh_host($host) ) {                # sshd connection test passed
+    my $start_time = [gettimeofday] ;
+    if ( defined( my $ssh_pid = open REMOTE, "|-" ) ) {
+      if ($ssh_pid) {
+        $0 = "netrun worker - $host (ssh PID = $ssh_pid)" ;
+        if ( $opts{'t'} ) {                       # Timeout specified on command-line
+          $SIG{'ALRM'} = sub {
+            warn "NETRUN:              RAN OUT OF TIME!\n" ;
+            kill 1, $ssh_pid ;
+          } ;
+          alarm $opts{'t'} ;
+        }
+        print REMOTE $opts{'e'}, "\n" if defined $opts{'e'} ;
+        copy( $opts{'s'}, \*REMOTE ) if defined $opts{'s'} ;
+        if ( defined $opts{'d'} ) {
+          if ( '-' eq $opts{'d'} ) {
+            print REMOTE @data ;
+          } else {
+            copy( $opts{'d'}, \*REMOTE );
+          }
+        }
+        close REMOTE ;
+        my $ssh_exit =
+          ( -1 == $? )
+          ? -1
+          : $? >> 8 ;
+        printf( STDERR "SSH EXIT STATUS:     %4d\n", $ssh_exit ) ;
+        printf( STDERR "RUNTIME:             %8.3f seconds\n", tv_interval( $start_time, [gettimeofday] ) ) ;
+      } else {
+        my @cmd = ( split( " ", $ssh ), "$user\@$host", $interpreter ) ;
+        exec @cmd or die "$0:  Could not start ssh: $!\n" ;
+      }
+    } else {
+      warn "$0:  Could not fork: $!\n" ;    # really should re-try...
+      $pm->finish ;
+    }
+  }
+  $pm->finish ;
+}
+$pm->wait_all_children ;
+print STDERR '#' x ( 49 - $hashes_displayed ) . " Done.\n" ;
+
+########################################
+#
+#  Dump stdout from all hosts if we
+#  are in 'quick' mode.
+#
+if ( defined $opts{'q'} ) {
+  foreach $host (@hosts) {
+    if ( open OUT, "< $logdir/$host.out" ) {
+      while (<OUT>) {
+        chomp ;
+        print "$host: ", $_, "\n" ;
+      }
+    }
+    close OUT ;
+    unlink "$logdir/$host.out", "$logdir/$host.err" ;
+  }
+  unlink "$logdir/netrun.summary" ;
+  rmdir $logdir ;
+  exit 0 ;
+}
+
+########################################
+#
+#  Collect status info from log files
+#
+my ( $exit_status, $runtime, $first_line, $lines, $status ) ;
+foreach $host (@hosts) {
+  $exit_status = $runtime = $status = undef ;
+  $lines = 0 ;
+  if ( open ERR, "< $logdir/$host.err" ) {
+    while (<ERR>) {
+      $exit_status = $1 if /^SSH EXIT STATUS:\s+([\d-]+)$/ ;
+      $runtime     = $1 if /^RUNTIME:\s+(\d+\.\d+) seconds$/ ;
+      $status      = $1 if /^SSH CONNECT STATUS:  (.*)$/ ;
+    }
+  }
+  close ERR ;
+  if ( open OUT, "< $logdir/$host.out" ) {
+    $first_line = <OUT> ;
+    while (<OUT>) { $lines++ }
+    if ( defined $first_line ) {
+      chomp($first_line) ;
+      $lines++ ;
+    } else {
+      $first_line = "" ;
+    }
+  }
+  close OUT ;
+  $results{$host} = {
+    SSH_STATUS   => $status,
+    EXIT_STATUS  => $exit_status,
+    RUN_TIME     => $runtime,
+    OUTPUT_LINES => $lines,
+    FIRST_LINE   => substr( $first_line, 0, 30 ),
+  } ;
+}
+
+########################################
+#
+#  Display and save a summary report
+#
+open SUMMARY, "| tee $logdir/netrun.summary"
+  or die "$0:  Could not run tee to save summary: $!\n" ;
+my $cmd_line = "netrun" ;
+while ( my ( $o, $p ) = each %opts ) {
+  if ( 'q' eq $o or 'R' eq $o ) {
+    $cmd_line .= " -$o" ;
+  } else {
+    $cmd_line .= " -$o '$p'" ;
+  }
+}
+print SUMMARY "\n   \$ $cmd_line $first_host ...\n" ;
+printf SUMMARY "\n   %-18s  %4s  %8s  %7s  %s\n", 'Name/Address', 'Exit', 'Runtime', '# Lines', 'First Line of Output' ;
+print SUMMARY "   ", "-" x 75, "\n" ;
+foreach $host ( sort by_fields keys %results ) {
+  if ( defined $results{$host}{EXIT_STATUS} ) {
+    printf SUMMARY "   %-18.18s  %4d  %8.3f  %7d  %s\n", $host, @{ $results{$host} }{ @fields[ 1 .. 4 ] } ;
+  } else {
+    printf SUMMARY "   %-18.18s  %s", $host, "interpreter failure" ;
+    print SUMMARY ":  ", $results{$host}{SSH_STATUS}
+      if defined $results{$host}{SSH_STATUS} ;
+    print SUMMARY "\n" ;
+  }
+}
+print SUMMARY "   ", "-" x 75, "\n" ;
+close SUMMARY ;
+
+print "\nResults can be found in $logdir\n" ;
+exit 0 ;
+
+__END__
+
+=head1 DESCRIPTION
+
+B<Netrun> provides a convenient and efficient way to run a single
+command or a script on a bunch of remote hosts.  B<Netrun> captures
+the output and error messages from the command or script for reporting
+and examination.
+
+B<Netrun> is powered by C<ssh> and assumes that you have a setup like
+the following:
+
+=over 4
+
+=item *
+
+You have created an SSH public/private key pair using C<ssh-keygen>.
+
+=item *
+
+You have copied your public key(s) to C<$HOME/.ssh/authorized_keys> on
+all of the remote hosts on which you plan to run commands or scripts
+with B<netrun>.  If you plan to access remote hosts with different
+accounts, you'll need to make sure that your public key(s) have been
+added to each account's authorized_keys file.  Be sure to check your
+local computer security policy and to get permission from the affected
+users before doing this!
+
+=item *
+
+You have started an C<ssh-agent> and loaded your private keys with
+C<ssh-add>.  Note that you can avoid having to run C<ssh-agent> by
+creating private keys with no passphrase.  Please do not do this!  At
+many sites, this is grounds for disciplinary action (especially if the
+corresponding public keys are added to root's authorized_keys files).
+
+=back
+
+For each hostname, IP address, or CIDR style subnet given on the
+command-line, B<netrun> performs the following steps:
+
+=over 4
+
+=item 1.
+
+Connects to port 22 and captures the SSH version string.  This is done
+to verify that the remote sshd is up and accessible.  Hosts will be
+skipped if this step takes longer than 15 seconds (or the connection
+timeout specified by B<-c>) to complete.
+
+=item 2.
+
+Attempts to establish an SSH connection and run an interpreter (the
+default is /bin/sh).
+
+=item 3.
+
+Feeds the script file (specified with B<-s>) or command string
+(specified with B<-e>) and an optional data file (specified with
+B<-d>) to the standard input of the interpreter.
+
+=item 4.
+
+Captures stdout and stderr of the interpreter to log files.  By
+default, these log files are stored in C<./netrun.PID>, however an
+alternate log directory may be specified via B<-L>.  If the user
+running netrun does not have both write and search permissions to the
+log directory, B<netrun> exits with an error message.
+
+=item 5.
+
+Displays a report that summarizes the status of the attempted actions.
+A copy of this summary is also saved in I<logdir>/netrun.summary.
+
+=back
+
+B<Netrun> runs these steps on at most 25 hosts (by default) at a time.
+The level of parallelism can be adjusted using B<-f>.  The status
+report that is displayed once all of the parallel jobs have completed
+includes the following information:
+
+=over 4
+
+=item Name/Address
+
+The hostname or IP address used to connect/login to the remote host
+
+=item Exit
+
+The exit status of the ssh process (if an SSH connection was made).
+Usually, this is the exit status of the interpreter that was run on
+the remote system; however, the ssh program uses 255 to indicate that
+an error occurred while trying to establish the connection.  A -1 exit
+status indicates that the remote script failed to complete before the
+timeout specified with B<-t>.
+
+=item Runtime
+
+The time in seconds required to ssh into the remote host and run the
+specified script or commands.
+
+=item # Lines
+
+The number of lines of output produced by the remote script.  This
+does not include lines written to stderr.
+
+=item First Line of Output
+
+The first 30 or so bytes of the first line of output from the remote script.
+
+=back
+
+If no script is specified (with B<-s> or B<-e>) on the command-line,
+B<netrun> skips steps 2 - 4 above and just displays the status of
+the connection to the SSH port.  Steps 2 - 4 are also skipped if
+B<netrun> is unable to connect to the SSH port and retrieve the SSH
+version string from the remote host.
+
+While B<netrun> does not actually use the SSH version string, it
+retrieves it to verify that an SSH connection to the remote host is
+possible and is not being blocked by hosts.allow, etc.  This prevents
+background processes from being tied up on ssh connections that can
+never succeed.
+
+=head2 OPTIONS
+
+=over 4
+
+=item B<-h>
+
+Display a brief summary of the command-line options.
+
+=item B<-q>
+
+In Quick mode, B<netrun> simply dumps script/command results from
+remote hosts to standard out.  Each line is prefixed with the hostname
+or IP address of the host from which the output came.  Hosts that fail
+to respond or to produce any output are excluded from the output.
+Also, log files are removed automatically.
+
+This mode is handy for running a command or script on a bunch of hosts
+and grep'ing the output.
+
+=item B<-R>
+
+Don't randomize the hosts list.  By default, all hosts and CIDR
+addresses are expanded and randomized.  This evens out performance by
+creating a mix of slow and fast remote hosts.  Specify B<-R> if you
+need B<netrun> to preserve the order of the hosts specified on the
+command-line.
+
+=item B<-S>
+
+Slow start.  By default, B<netrun> starts new processes as fast as it
+can, but when running large numbers of background processes (see
+B<-f>), this can quickly overwhelm even a powerful workstation and may
+also trigger DoS settings in corporate firewalls.  This option adds a
+1/4 second sleep between each process start to pace things out a bit.
+
+=item B<-c> I<connect timeout>
+
+In order avoid forking off lots of ssh(1) processes that may never
+come back, B<netrun> tries to connect to port 22 on each host in the
+work list.  If a host takes longer than a default of 15 seconds to
+respond, B<netrun> skips it.  This almost always works well, but if
+the SSH server is linked with the TCP Wrapper library and the
+nameservers are not responding, a timeout of at least two minutes
+will be necessary.
+
+=item B<-f> I<max forks>
+
+Specify the maximum number of background processes.  The default is 25.
+
+=item B<-i> I<interpreter>
+
+Run the specified interpreter on the remote hosts.  The default is
+C</bin/sh>.  The interpreter is only run if a script file or command
+string is specified via B<-s> or B<-e> respectively.
+
+=item B<-s> I<script file>
+
+Provide a local file containing a script to run on the remote hosts.
+This script is sent to the specified interpreter's standard input.
+The default interpreter is C</bin/sh>.
+
+=item B<-e> I<script>
+
+Like B<-s>, but the script source code is provided on the
+command-line, usually inside of single-quotes.  This is handy for
+small one-off runs.  If both B<-e> and B<-s> are specified, the
+command string from B<-e> is sent first, followed by the contents of
+the file specified with B<-s>.
+
+=item B<-d> I<data file>
+
+Specify a local file to be appended to the end of the script.  When
+the interpreter is C<perl>, this is actually a convenient way to pass
+parameters or data to the remote script.  Just make the first line of
+the data file contains only C<__DATA__>, and have the script read from
+the C<DATA> file handle.  It's actually necessary to do things this
+way because the script source code is sent as standard input to the
+remote interpreter; therefore there is no way to pass arguments on the
+command-line.  If C<-> is passed as the argument to C<-d>, B<netrun>
+reads the data from standard input instead of a file.
+
+=item B<-l> I<login name>
+
+Specifies the user to log in as on the remote hosts.  By default, this
+is the same as the user running B<netrun>.
+
+=item B<-L> I<log dir>
+
+Create log files in I<log dir> instead of C<./netrun.PID>.  B<Netrun>
+creates two log files for each remote host:  I<hostname>.err and
+I<hostname>.out
+
+The I<hostname>.err file contains a few special fields written by
+B<netrun> (used to create the status summary) as well as any messages
+sent to standard error by the script while it was running on the
+remote host.
+
+The I<hostname>.out file simply contains any text that the remote
+script wrote to standard output.
+
+=item B<-t> I<timeout>
+
+Kill the remote script after timeout seconds.  By default, there is no
+time limit.  The actual SSH process is sent a C<SIGHUP>, which causes
+it to shutdown the remote shell and kill the interpreter.  The exit
+status reported by B<netrun> in the summary report will be C<-1> in
+this case.
+
+=back
+
+=head1 EXAMPLES
+
+The first few examples illustrate how B<netrun> works in terms of
+equivalent shell operations.  Once you understand that, you'll know
+the limitations of B<netrun> and how to best take advantage of its
+capabilities.
+
+The following two commands do basically the same thing, run C<uptime>
+on a remote host:
+
+   $ echo "uptime" | ssh fred.mydomain.com /bin/sh
+   $ netrun -qe uptime fred.mydomain.com
+
+B<Netrun> invokes an interpreter (default is C</bin/sh>) on each
+remote host and then sends commands, scripts, and/or data to the
+remote interpreter's standard input.  It works this way because most
+of the time this eliminates the need to maintain a copy of your script
+on each remote host.  For example:
+
+   $ cat my_script.pl | ssh fred.mydomain.com perl
+   $ netrun -qi perl -s my_script.pl fred.mydomain.com
+
+The chief limitation of this approach is that you can't send
+command-line arguments to your script.  In the case of B<perl>
+scripts; however, you can send C<DATA>.  For example:
+
+   $ cat my_script.pl my_data.txt | ssh fred.mydomain.com perl
+   $ netrun -qi perl -d my_data.txt -s my_script.pl fred.mydomain.com
+
+In this case, C<my_data.txt> probably contains something like this:
+
+   __DATA__
+   @ARGV = split " ", "-a -f /etc/init.d -v";
+
+In C<my_script.pl>, there might be some (slightly dangerous) code like
+this:
+
+   while ( <DATA> ) { eval $_ }
+
+Here is another somewhat silly example which shows that B<netrun> runs
+the interpreter specified by B<-i> on each remote host, sending to
+that interpreter's standard input the value of B<-e> followed by the
+contents of the local file specified by B<-s> followed by the contents
+of the local file specified by B<-d>:
+
+   $ netrun -i perl -e 'print "Hello, '`uname -n`'";' \
+                    -s my_script.pl \
+                    -d my_data.txt  fred.mydomain.com
+
+The above example prepends a B<perl> print statement to the
+C<my_script.pl> script and tacks the contents of my_data.txt to the
+end of it.  It sends the resulting concatenation to the standard input
+of the B<perl> process on each remote host, where hopefully it will do
+something useful.
+
+With that introduction, here are some hopefully more useful examples:
+
+Tell C<inetd> to re-read its configuration file on a bunch of Solaris hosts:
+
+   $ test -n "$SSHS_AGENT_PID" && kill -0 $SSHS_AGENT_PID \
+     || eval `ssh-agent`
+   $ ssh-add -l | grep 'no identities' && ssh-add
+   $ netrun -l root -e 'pkill -1 inetd' `cat hosts.lst`
+   $ ssh-add -d
+
+Create a list of all systems on the local LAN that are running Oracle:
+
+   $ netrun -e 'ps -ef' -L Oracle 192.168.1.0/24
+   $ grep -li oracle Oracle/*.out | sed 's/\.out$//'
+   $ rm -rf Oracle
+
+Same thing but shorter:
+
+   $ netrun -q -e 'ps -ef' 192.168.1.0/24 | grep -i oracle | cut -d: -f1
+
+Clone the local C</etc/sudoers> file out to a bunch of hosts (assumes
+that you can sudo run C<tee> and C<cksum> and that you have the
+NOPASSWD flag set):
+
+   $ sudo cat /etc/sudoers | netrun -q -d - -i '
+        sudo tee /etc/sudoers > /dev/null
+        sudo cksum /etc/sudoers' \
+     `cat hosts.lst`
+
+=head1 SEE ALSO
+
+L<ssh>, L<sh>, L<perl>, L<grep>, L<wfrun>
+
+=head1 AUTHOR
+
+David C. Snyder <David.Snyder@turner.com>

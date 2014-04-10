@@ -1,0 +1,92 @@
+#!/usr/bin/perl -w
+# play with preadsheet::XML_to_XLS
+
+# kmulholland, v0.1, 2012-08-08 
+# moodfarm@cpan.org
+
+use 5.014 ;
+
+use App::Basis ;
+use Data::Dumper qw(Dumper) ;
+$Data::Dumper::Terse = 1 ;
+use File::Slurp qw( write_file read_file) ;
+use File::Basename ;
+use Spreadsheet::XML_to_XLS ;
+
+# ----------------------------------------------------------------------------
+
+my $VERSION = '0.1' ;
+my $OUTPUT_FILE = "/tmp/data_report.xls" ;
+my $TMP_XML = "/tmp/xml_data.xml" ;
+
+# ----------------------------------------------------------------------------
+
+my $xml = <<EOD ;
+<?xml version="1.0"?>
+<!DOCTYPE workbook SYSTEM "xml_to_xls.dtd">
+<workbook>
+    <worksheet>
+        <set bold="yes">
+            <cell>Category</cell>
+            <cell>Values</cell>
+        </set>
+        <set type="col">
+            <set>
+                <cell>Apple</cell>
+                <cell>60</cell>
+            </set>
+            <set>
+                <cell>Cherry</cell>
+                <cell>30</cell>
+            </set>
+            <set>
+                <cell>Pecan</cell>
+                <cell>10</cell>
+            </set>
+            <set name="category" col="+0"/>
+            <set name="data" col="+1"/>
+        </set>
+        <chart pos="D1" name="Popular Pie Types" type="pie" width="0.6" height="1.0">
+            <data categories="category" values="data" name="Pie sales data"/>
+            <title name="Popular Pie Types"/>
+        </chart>
+    </worksheet>
+</workbook>
+
+EOD
+
+# ----------------------------------------------------------------------------
+# main
+my %opt = init_app(
+  help_text       => 'Play with some xml for reporting'
+  , options       =>  {
+    'file|f=s'    => "Override builtin data with XML data from this file"
+    , 'out|o=s'   => "output file (default:$OUTPUT_FILE)" 
+    , 'pdf|p'     => "also create PDF from output"
+    , 'verbose|v' => "explain whats going on"
+  }
+) ;
+
+$opt{out} ||= $OUTPUT_FILE ;
+$opt{out} =~ s/^~/$ENV{HOME}/ ;
+
+if( $opt{file}) {
+  $opt{file} =~ s/^~/$ENV{HOME}/ ;
+  say "file $opt{file}" ;
+  show_usage( "Input file does not exist - $opt{file}")  if( ! -f $opt{file})  ;
+  $xml = read_file( $opt{file}) ;
+} 
+
+write_file( $TMP_XML, $xml) ;
+say "input data: " . Dumper( $xml) if( $opt{verbose}) ;
+
+Spreadsheet::XML_to_XLS::build( '', $TMP_XML, $opt{out}) ;
+say "Created $opt{out}" if( -f $opt{out});
+
+if( $opt{pdf}) {
+  my $dir = dirname( $opt{out}) ;
+  say "Creating PDF" if( $opt{verbose}) ;
+  my $cmd = "libreoffice --headless --convert-to pdf:writer_pdf_Export --outdir '$dir' '$opt{out}'" ;
+  say "PDF command: $cmd" if( $opt{verbose}) ;
+  system( $cmd) ;
+}

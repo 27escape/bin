@@ -1,0 +1,90 @@
+#!/usr/bin/env perl
+# send a google mail
+# kmulholland, v0.1, 2012-08-21
+# moodfarm@cpan.org
+
+use 5.014 ;
+
+use strict ;
+use warnings ;
+use App::Basis ;
+use App::Basis::Config ;
+use File::Slurp qw(read_file) ;
+use Email::Send::SMTP::Gmail ;
+use Email::Valid ;
+
+# ----------------------------------------------------------------------------
+use constant ACCOUNTS => "/home/kmulholland/git/data/accounts.yaml" ;
+
+my $VERSION = '0.1' ;
+
+# ----------------------------------------------------------------------------
+# main
+
+my %opt = init_app(
+    help_text => 'send a google email',
+    options   => {
+        'config' => {
+            desc    => 'Config file holds email account detail',
+            default => ACCOUNTS
+        },
+        'account|a=s' => { desc => 'account to use', required => 1 },
+        'to|t=s'      => {
+            desc     => "who to send email to",
+            required => 1
+        },
+        'subject|s=s'  => "email subject",
+        'file|f=s'     => 'Use this file as the body of the email',
+        'body|b=s'     => "body of the email",
+        "attachment=s" => "single file attachment",
+        'verbose|v'    => "explain whats going on"
+    }
+) ;
+
+my @to ;
+my $accounts ;
+my $cfg = App::Basis::Config->new( filename => $opt{config} ) ;
+
+my $user = $cfg->get("accounts/$opt{account}/user") ;
+my $pass = $cfg->get("accounts/$opt{account}/pass") ;
+show_usage("Could not obtain account details") if ( !$pass && !$user ) ;
+
+# we will allow , or ; as email separators
+$opt{to} =~ s/\s//m ;    # remove all spaces
+foreach my $t ( split( /,|;/, $opt{to} ) ) {
+    if ( Email::Valid->address($t) ) {
+        push @to, $t ;
+    } else {
+        say STDERR "Email address $t does not appear to be valid" ;
+    }
+}
+show_usage("No valid email addresses") if ( !@to ) ;
+if ( $opt{file} ) {
+    show_usage("Bad filename $opt{file}") if ( !-f $opt{file} ) ;
+    $opt{body} = read_file( $opt{file} ) ;
+}
+show_usage("option 'subject' and/or 'body' required") if ( !( $opt{subject} || $opt{body} ) ) ;
+if ( $opt{attachment} ) {
+    $opt{attachment} =~ s/^~/$ENV{HOME}/ ;
+    show_usage("Cannot find attachment file $opt{attachment}") if ( !$opt{attachment} ) ;
+}
+say STDERR "Continuing without a subject" if ( !$opt{subject} ) ;
+say STDERR "Continuing without a body"    if ( !$opt{body} ) ;
+
+my $mail = Email::Send::SMTP::Gmail->new(
+    -smtp  => 'smtp.gmail.com',
+    -login => $user,
+    -pass  => $pass
+) ;
+msg_exit("Could not connect to google") if ( !$mail ) ;
+
+$mail->send(
+    -to          => join( ',', @to ),
+    -subject     => $opt{subject},
+    -charset     => 'UTF-8',
+    -verbose     => $opt{verbose},
+    -body        => $opt{body},
+    -attachments => $opt{attachment}
+) ;
+
+$mail->bye ;

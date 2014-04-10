@@ -1,0 +1,288 @@
+#!/usr/bin/env perl
+# sysinfo, get info about a system, and dump to stdout in JSON format
+# does not do anything special perlwise so that there are mininal dependencies
+# does not actually use the JSON module, just writes something that should be
+# parsible by it
+#
+# (c) kevin Mulholland 2012, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# v0.1 moodfarm@cpan.org, initial work
+
+use 5.10.0 ;
+use warnings ;
+use strict ;
+use JSON::Tiny ;
+
+# -----------------------------------------------------------------------------
+
+use constant SERVICES => '/etc/services' ;
+
+# -----------------------------------------------------------------------------
+
+my @status_locations = qw( /opt/inview/logs/status  /opt/logs/status /var/log/inview/status) ;
+
+# -----------------------------------------------------------------------------
+# will return an empty string if there is no file or unable to read
+#
+sub slurp
+{
+  my $filename = shift ;
+  return "" if ( !-f $filename ) ;
+
+  local $/ = undef ;
+  return "" if ( !open( FILE, $filename ) ) ;
+  my $data = <FILE> ;
+  close(FILE) ;
+
+  return $data ;
+}
+
+# -----------------------------------------------------------------------------
+# read the etc/services file
+sub read_services
+{
+  my $file = slurp(SERVICES) ;
+  return undef if ( !$file ) ;
+  my %data ;
+  foreach my $line ( split( /\n/, $file ) ) {
+    my ( $name, $port ) = $line =~ m|^(.*?)\s+(.*?)/| ;
+    next if ( !$name ) ;
+    $data{$port} = $name ;
+  }
+
+  return \%data ;
+}
+
+# find a service to match a TCP port numnber
+sub find_service
+{
+
+  # load up the static service data
+  state $etc_services = read_services() ;
+
+  my $port = shift ;
+
+  # just use the port number if we can't match anything
+  return $etc_services->{$port} ? $etc_services->{$port} : $port ;
+}
+
+# -----------------------------------------------------------------------------
+sub get_system_detail {
+  my %data = () ;
+  # get the simple things first
+  $data{time} = time() ;
+  $data{hostid} = `hostid` ;
+  chomp $data{hostid} ;
+  $data{processor_type} = `uname -m` ;
+  chomp $data{processor_type} ;
+  my $lsb = `lsb_release -d` ;
+  ($data{os}) = $lsb =~ /Description:\s+(.*)/ ;
+  $data{hostname} = `hostname -A` ;
+  # grab domain out of hostname
+  if( $data{hostname} =~ /\./) {
+    my ($host, $domain) = $data{hostname} =~ /^(.*?)\.(.*)/ ;
+    $data{hostname} = $host ;
+    $data{domain} = $domain ;
+  }
+  # grab domain from resolv.conf if not in hostname
+  if( !$data{domain}) {
+    my $resolv = slurp( '/etc/resolv.conf') ;
+    $resolv =~ s/#.*$//gm ; # remove comments
+    $resolv =~ s/^\s+|\s+$//gm ; # trim leading/trailing space
+    ($data{domain}) = $resolv =~ /^search\s+(.*?)$/m ;
+  }
+  chomp $data{hostname} ;
+  my $cpuinfo = slurp( '/proc/cpuinfo') ;
+  my ($vendor, $processor) = $cpuinfo =~ /vendor_id\s+:\s+(\w+).*?model name\s+:\s+(.*?)$/gsm ;
+  $processor =~ s/\s+/ /g ;
+  $data{processor} = $processor ;
+  $data{processor_vendor} = $vendor ;
+  my $dmidecode = `dmidecode 2>/dev/null` ;
+  # make sure we have something and its lots of something
+  if( $dmidecode && length( $dmidecode) > 900) {
+    ($data{bios}) = $dmidecode =~ /^BIOS Information\.*?\s+Vendor:\s(.*?)$/gsm ;
+    my ($manuf, $product, $serial, $uuid) = $dmidecode =~ /System Information.*?Manufacturer:\s(.*?)\n.*?Product Name:\s(.*?)\s+\n.*?Serial Number:\s(.*?)\n.*?UUID:\s(.*?)$/sm ;
+    $data{manufacturer} = $manuf ;
+    $data{product} = $product ;
+    $data{serial_number} = $serial ;
+    $data{uuid} = $uuid ;
+  }
+
+  return \%data ;
+}
+
+# -----------------------------------------------------------------------------
+
+sub get_memory
+{
+  my $mem = `free -m` ;
+  return undef if ( !$mem ) ;
+  my %data ;
+  $mem =~ /Mem:\s+(\d+)\s+(\d+)\s+(\d+)/igsm ;
+  $data{memory} = { total => $1, used => $2, free => $3 } ;
+  $mem =~ /Swap:\s+(\d+)\s+(\d+)\s+(\d+)/igsm ;
+  $data{swap} = { total => $1, used => $2, free => $3 } ;
+
+  return \%data ;
+}
+
+# -----------------------------------------------------------------------------
+sub get_disk
+{
+  my $disk   = `df -lP` ;
+  my $inodes = `df -liP` ;
+  return undef if ( !$disk && !$inodes ) ;
+  my %drives ;
+
+  # get the fields from the lines of disk info
+  foreach my $dev ( $disk =~ m|^(/dev/.*?)$|gm ) {
+    $dev =~ m|^(.*?)\s+(.*?)\s+(.*?)\s+(.*?)\s+(.*?)\s+(.*?)$| ;
+    $drives{$6} = {
+      device    => $1,
+      size      => $2,
+      used      => $3,
+      available => $4,
+      used      => $5
+    } ;
+  }
+
+  # get the fields from the lines of inode info
+  foreach my $inode ( $inodes =~ m|^(/dev/.*?)$|gm ) {
+    $inode =~ m|^(.*?)\s+(.*?)\s+(.*?)\s+(.*?)\s+(.*?)\s+(.*?)$| ;
+
+    $drives{$6}->{inodes} = $2 ;
+    $drives{$6}->{iused}  = $3 ;
+    $drives{$6}->{ifree}  = $4 ;
+    $drives{$6}->{iused}  = $5 ;
+  }
+
+  return \%drives ;
+}
+
+# -----------------------------------------------------------------------------
+sub get_processes
+{
+  my $ps = `ps -eo comm ` ;    # just get list of programs running
+  return undef if ( !$ps ) ;
+  my @lines = split( /\n/, $ps ) ;
+
+  # remove the 'COMMAND' line from the top of the list
+  pop @lines ;
+
+  my %data = ( count => scalar(@lines), processes => \@lines ) ;
+
+  return \%data ;
+}
+
+# -----------------------------------------------------------------------------
+sub get_network_detail
+{
+  my $net = `ifconfig -a 2>/dev/null` ;
+  return undef if ( !$net ) ;
+
+  my %data ;
+
+  # get the data about each device, these are separated with double line feeds
+  foreach my $device ( split( /\n\n/, $net ) ) {
+    my ($if) = $device =~ /^(.*?)\s/ ;
+
+    # approx the ethernet address
+    my ($ether) = $device =~ /HWaddr (\w+:\w+:\w+:\w+:\w+:\w+)\s/ ;
+
+    # approx ip4 address
+    my ($ip) = $device =~ /inet addr:(\d+\.\d+\.\d+\.\d+)\b/ ;
+    my ( $rx, $tx ) = $device =~ /RX bytes:(\d+).*?TX bytes:(\d+)\s/ ;
+    $data{$if} = {
+      ethernet => $ether,
+      ip_addr  => $ip,
+      rx_bytes => $rx,
+      tx_bytes => $tx
+    } ;
+  }
+
+  return \%data ;
+}
+
+# -----------------------------------------------------------------------------
+sub get_network_stats
+{
+  my $listening = `netstat -tln` ;
+  my $connected = `netstat -tn` ;
+  my %data      = () ;
+  return undef if ( !$listening || !$connected ) ;
+
+  # get the fields from the lines of listening data
+  $data{listening} = [] ;
+  foreach my $line ( split( /\n/, $listening ) ) {
+    my ( $addr, $port ) = $line =~ m|^tcp\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+):(\d+).*?LISTEN| ;
+    next if ( !$addr ) ;
+    my $tmp = {
+      address => $addr,
+      port    => $port,
+      service => find_service($port)
+    } ;
+    push @{ $data{listening} }, $tmp ;
+  }
+
+  # get the fields from the lines of connected data
+  $data{connected} = [] ;
+  foreach my $line ( split( /\n/, $connected ) ) {
+    my ( $laddr, $lport, $raddr, $rport, $state ) = $line =~ m|^tcp\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+):(\d+)\s+(\d+\.\d+\.\d+\.\d+):(\d+)\s+(.*)| ;
+    next if ( !$laddr ) ;
+    my $tmp = {
+      local_addr     => $laddr,
+      local_port     => $lport,
+      local_service  => find_service($lport),
+      remote_addr    => $raddr,
+      remote_port    => $rport,
+      remote_service => find_service($rport),
+      state          => $state
+    } ;
+    push @{ $data{connected} }, $tmp ;
+  }
+
+  return \%data ;
+}
+
+# -----------------------------------------------------------------------------
+sub get_inview_status
+{
+  my $status ;
+  my $json = JSON::Tiny->new() ;
+  my %data ;
+  foreach my $loc (@status_locations) {
+    if ( opendir( my $dh, $loc ) ) {
+      while ( readdir $dh ) {
+        my $file = $_ ;
+        next if( !$file) ;
+        if ( $file !~ /^\./ ) {
+          my @stat     = stat("$loc/$file") ;
+          my $contents = slurp("$loc/$file") ;
+          $data{$file} = $json->decode($contents) ;
+        }
+      }
+    }
+  }
+
+  return \%data ;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my %status ;
+
+$status{system_detail} = get_system_detail() ;
+$status{memory}        = get_memory() ;
+$status{disk}          = get_disk() ;
+$status{processes}     = get_processes() ;
+$status{network_dev}   = get_network_detail() ;
+$status{network_stats} = get_network_stats() ;
+$status{status_files}  = get_inview_status() ;
+
+my $json = JSON::Tiny->new() ;
+
+my $enc = $json->encode( \%status ) ;
+say $enc ;
+#say "JSON: $enc\nbytes: " . length($enc) ;

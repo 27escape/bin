@@ -1,0 +1,162 @@
+#!/usr/bin/perl -w
+# get film info from imdb
+# v0.2 switch to use App::Basis
+# moodfarm@cpan.org
+
+use 5.012 ;
+
+use App::Basis qw( :delaydb) ;
+$Data::Dumper::Terse = 1 ;
+use IMDB::Film ;
+use Try::Tiny ;
+
+# ----------------------------------------------------------------------------
+my $VERSION = '0.2' ;
+my $MAX_MATCHES = 5 ;
+my $TIMEOUT = 2 ;
+
+# ----------------------------------------------------------------------------
+# build info about the film in a consistant manner
+sub film_info {
+  my ($imdb, $opt, $spacer) = @_ ;
+  my $str = '' ;
+  $spacer ||= '' ;
+
+  if( $imdb && $imdb->status) {
+    $str = $imdb->title() . ", " . $imdb->year() . ', ' . $imdb->rating . ", [$imdb->{_code}] (http://www.imdb.com//title/tt$imdb->{_code})" ;
+    # it is possible that we cannot fetch the plot, and would die, lets
+    # mitigate against that, no catch cos we just don't care if it failed
+    try {
+      $str .= "\n$spacer" . "Plot: " . $imdb->full_plot() if( $opt->{plot} && length( $imdb->full_plot)) ;
+      if( $opt->{info}) {
+        my $duration = $imdb->duration() ;
+        $str .= "\n$spacer" . "Genre: " . string_list($imdb->genres())
+          . "\n$spacer" . "Kind: " . $imdb->kind()
+          . "\n$spacer" . "Writers: " . string_list($imdb->writers(), 'name')
+          . "\n$spacer" . "Directors: " . string_list($imdb->directors(), 'name')
+          . "\n$spacer" . "Cast: " . string_list($imdb->cast(), 'name')
+          . "\n$spacer" . "Duration: $duration"
+          . "\n" ;
+      }
+    } ;
+  }
+
+  return $str ;
+}
+
+sub string_list {
+    my ($list, $key, $spacer) = @_ ;
+    my $str = '' ;
+    $spacer ||= ", " ;
+
+    if( ref( ${$list}[0]) eq 'HASH') {
+        $str = join( $spacer, map{ $_->{$key} ;} @{$list}) if( $key) ;
+    } else {
+        $str = join( $spacer, @{$list}) ;
+    }
+
+    return $str ;
+}
+# ----------------------------------------------------------------------------
+# main
+
+# ----------------------------------------------------------------------------
+# main
+my %opt = init_app(
+  help_text       => 'Find film matches from IMDB'
+  , help_cmdline  => '"name of filme to find"'
+  , options         =>  {
+    'max|m=i'       => "max number of results  (default:$MAX_MATCHES)"
+    , 'plot|p'      =>  "Show plot summary"
+    , 'timeout|t=i' =>  "seconds before timeout forces failure (default:$TIMEOUT) secs"
+    , 'info|i'      => 'Show full film info'
+    , 'genre|g=s'   => 'comma separated list of genres to match [comedy|action|documentary...]'
+    , 'type=s'      => 'comma separated list of types to match [movie|video|tv episode...]'
+  }
+) ;
+
+# set the defaults if we do not have options
+$opt{max} ||= $MAX_MATCHES ;
+$opt{timeout} ||= $TIMEOUT ;
+
+my $name = join( ' ', @ARGV) ;
+show_usage( 'No film name passed') if( !$name) ;
+
+#     user_agent      => 'Opera/8.x'
+my $search ;
+my $err ;
+# system( "rm -rf /tmp/imdb_cache") ;
+# if this fails then we will fall out
+try {
+    # search for lots more cos we may dump some out when matching against genre and type
+    my $max = ($opt{genre} || $opt{type}) ? $opt{max} * 3 : $opt{max} ;
+    # it ain't a film
+    $opt{genre} =~ s/film/movie/i ;
+    
+    $search = new IMDB::Film( crit => $name
+        , timeout       => $opt{timeout}
+        , cache         => 1
+        , cache_root    => '/tmp/imdb_cache'
+        , cache_exp     => '1 d'
+        , search        => "find?s=tt&mx=$max&q="
+    ) ;
+
+} catch {
+    $err = $_ ;
+} ;
+# say Dumper( $search) ;
+
+my $spacer = '    ' ;
+
+if( $search && $search->status) {
+    my @matches = @{$search->{matched}} ;
+    if( scalar( @matches)) {
+        my $matched = 0 ;
+        my $header = 'Matches:' ;
+        $header = "Showing up to $opt{max} of " . scalar(@matches) . ' Matches:' if( scalar( @matches) > $opt{max}) ;
+        say $header ;
+        # loop through matches, get info based on film id, max 5 matches
+        my $max = scalar( @matches) > $opt{max} ? $opt{max} : scalar( @matches) ;
+        foreach my $match ( @matches) {
+            next if( !$match) ;
+
+            my $imdb ;
+            # potential for failure, so catch it
+            try {
+                $imdb = new IMDB::Film( crit => $match->{id}
+                    , timeout       => $opt{timeout}
+                    , cache         => 1
+                    , cache_root    => '/tmp/imdb_cache'
+                    , cache_exp     => '1 d'
+                ) ;
+            } ;
+            next if( !$imdb || !$imdb->status) ;
+
+            my $genre = join( ' ', @{$imdb->genres()}) ;
+            my $type = $imdb->kind() ;
+# say "genre $genre, type $type" ;
+            next if( $opt{genre} && $genre !~ /$opt{genre}/i) ;
+            next if( $opt{type} && ! grep { /$type/i} split( ',', $opt{type})) ;
+            $matched++ ;
+
+            say $spacer . ($matched) . '. ' . film_info( $imdb, \%opt, $spacer) . ($opt{plot} ? "\n" : '') ;
+            last if( $matched >= $opt{max}) ;
+        }
+    } else {
+        my $genre = join( ' ', @{$search->genres()}) ;
+        my $type = $search->kind() ;
+        my $matched = ($opt{genre} || $opt{type}) ? 0 : 1 ;
+
+        if( $opt{genre} || $opt{type}) {
+            $matched++ if( $opt{genre} && $genre =~ /$opt{genre}/i) ;
+            $matched++ if( $opt{type} && grep { /$type/i} split( ',', $opt{type})) ;
+            # we need both to match if they are both defined
+            $matched = 0 if( $opt{genre} && $opt{type} && $matched != 2) ;
+        }
+        say film_info( $search, \%opt) if( $matched) ;
+    }
+} elsif( $search) {
+    msg_exit( get_program() . ': Something went wrong ' . $search->error, 2) ;
+} else {
+    msg_exit( get_program() . ': Something went badly wrong ' . $err, 3) ;
+}

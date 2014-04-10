@@ -1,0 +1,116 @@
+#!/usr/bin/env perl 
+# a When::Happens recipe
+# convert mindmap files into markdown and then
+# convert markdown files into pdf using the markup script
+# (c) author moodfarm@cpan.org
+# license: same as perl
+# date 2013-02-23
+
+# to reduce the load on your system, ensure that you have proper event notifiers
+# iunstalled, otherwise a loop will be used
+
+# cpanm IO::KQueue Linux::Inotify2
+
+use 5.14.0;
+use strict;
+use warnings;
+
+use When::Happens;
+use When::Happens::FileNotify;
+use App::Basis qw(debug get_program);
+
+my $verbose = 0;
+
+# -----------------------------------------------------------------------------
+# This is called when files are changed in our watched dir
+
+sub convert_markdown {
+    my ($params, $changed) = @_;
+
+    foreach my $o (@$changed) {
+        logger( "INFO", $o->type() . ": " .$o->path()) ;
+
+        # we can only process files
+        next if ( !-f $o->path() );
+        next if ( $o->type() !~ /modify|create/ );
+        # we don't want to process deletes etc
+        my $filename = $o->path();
+
+        my $newfile = $filename;
+        # make sure we have a new name
+        $newfile =~ s/\.md$/.pdf/i;
+        # convert to pdf, use markup prince mode, always force clean creation
+        # will only convert those files that have a :format keyword
+        my ( $exit, $out, $err ) = run "md2format --file='$filename' -e -p -c" . ($verbose ? " -v" : "" ) ;
+        my $msg;
+        if ( ( stat($newfile) )[9] > ( stat($filename) )[9] ) {
+            $msg = "created $newfile";
+        }
+        else {
+            $msg = "failed to create $newfile";
+            $msg .= " ($err)" if ($verbose && $err);
+        }
+        logger( "INFO", $msg );
+        say $msg if ($verbose);
+    }
+}
+
+# -----------------------------------------------------------------------------
+sub convert_mindmap {
+    my ($params, $changed) = @_;
+
+    foreach my $o (@$changed) {
+        # we can only process files
+        next if ( !-f $o->path() );
+        # we don't want to process deletes etc
+        next if ( $o->type() !~ /modify|create/ );
+
+        my $filename = $o->path();
+
+        my $newfile = $filename;
+        # make sure we have a new name
+        $newfile =~ s/\.md$/.odt/i;
+        my ( $exit, $out, $err ) = run "mm2md --filename='$newfile'" . ($verbose ? " -v" : "" ) ;
+        my $msg;
+        if ( ( stat($newfile) )[9] > ( stat($filename) )[9] ) {
+            $msg = "created $newfile";
+        }
+        else {
+            $msg = "failed to create $newfile";
+            $msg .= " [$err]" if ($verbose && $out);
+            $msg .= " ($err)" if ($verbose && $err);
+        }
+        logger( "INFO", $msg );
+        say $msg if ($verbose);
+
+
+    }
+}
+# -----------------------------------------------------------------------------
+
+my %opt = init_happens(
+    help_text => 'Convert mindmap and markdown files to required format on directory file changes. Only files ending in .md or .mm will converted.',
+    options   => {
+        "dir|d=s" => {
+            desc     => 'directory to monitor for file changes',
+            required => 1
+        },
+        'verbose|v' => 'Print out extra information',
+        "daemon"    => 'Run in the background as a daemon'
+    },
+);
+
+# start happens stuff and do command line
+init_happens(%opt);
+
+$opt{dir} =~ s/^~/$ENV{HOME}/;
+$verbose = $opt{verbose};
+
+# setup our dir watcher for markdownfiles
+filenotify { id => 'markdown', dir => $opt{dir}, filter => qr/.md$/i } => \&convert_markdown;
+
+# setup our dir watcher for mindmaps
+filenotify { id => 'mindmap', dir => $opt{dir}, filter => qr/.mm$/i } => \&convert_mindmap;
+
+# wait for stuff to happen, the When::Happens event loop
+happens;

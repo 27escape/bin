@@ -1,0 +1,136 @@
+#!/usr/bin/perl -w
+# convert a csv like text file into a excel spreadsheet
+# this can be used to either manage proper csv files
+# or unstructured text files that people want in an excel spreadsheet!
+#
+# (c) kevin Mulholland 2004, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# 28/09/2011 moodfarm@cpan.org using Text::CSV::Slurp 
+
+use 5.10.0 ;
+use strict ;
+use Data::Dumper qw( Dumper) ;
+use utf8 ;
+use Text::CSV::Slurp ;
+
+# use Spreadsheet::WriteExcel ;
+use Excel::Writer::XLSX ;
+use Smart::Comments ;
+use App::Basis ;
+
+use constant DELIMITOR => ',' ;
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+  help_text    => "Convert CSV data into an Excel spreadsheet",
+  help_cmdline => "$program [-help] [-options] outputfilename [workbook,]inputfilename ...
+    $program filename.xls filename.csv
+    $program filename.xls workbook,csv1.csv
+    $program filename.xls wb1,csv1.csv wb2,csv2.csv ... wbx,csvx.csv 
+    $program -p \"passwd\" filename.xls filename.csv
+    $program -d ';' filename.xls filename.csv
+",
+  options => {
+    'delimitor|d=s' => {
+      desc => 'delimitor/separator of columns',
+      default => DELIMITOR
+    },
+    'password|p=s'  => 'Password protect the spreadsheet',
+    'output|o=s'    => {
+      desc     => 'output (xls) filename',
+      required => 1
+    }
+  }
+) ;
+
+show_usage("Bad arguments") if ( scalar @ARGV < 1 ) ;
+
+# Create a new Excel workbook
+# my $workbook  = Spreadsheet::WriteExcel->new( $opt{output});
+# make sure we have the right extension
+if ( $opt{output} !~ /\....$/ ) {
+  $opt{output} .= ~'.xlsx' ;
+} else {
+  $opt{output} =~ s/\.xls$/\.xlsx/i ;
+}
+
+my $workbook = Excel::Writer::XLSX->new( $opt{output} ) ;
+
+$workbook->set_properties(
+  author => "$program for Inview Interactive"
+
+    #   , utf8    => 1
+) ;
+
+my $count = 1 ;
+foreach my $name (@ARGV) {
+  my $infilename ;
+  my $sheet ;
+
+  # either filename or "workbook,filename"
+  my ( $a, $b ) = split( /,/, $name ) ;
+
+  # if no workbook then add a default
+  if ( !$b ) {
+    $infilename = $a ;
+
+    # use the filename up to any '.' as the workbook name
+    $a =~ m/(\w+)\.\w+$/ ;
+    if ($1) {
+      $sheet = $1 ;
+    } else {
+      $sheet = "Worksheet $count" ;
+    }
+    $count++ ;
+  } else {
+    $infilename = $b ;
+    $sheet      = $a ;
+  }
+
+  my $worksheet = $workbook->add_worksheet($sheet) ;
+
+  my $row = 1 ;
+### loading
+  my $file_data = Text::CSV::Slurp->load(
+    file   => $infilename,
+    binary => 1
+
+      #    , eol       => $/
+    ,
+    sep_char           => $opt{delimitor},
+    allow_loose_quotes => 1
+
+      #    , allow_white_space   => 1
+  ) ;
+
+  my @headings ;
+  foreach my $data (@$file_data) {    ### Working===[%]
+    if ( $row == 1 ) {
+      my $format ;
+      $format = $workbook->add_format() ;
+      $format->set_bold() ;
+      $format->set_align('center') ;
+      @headings = keys(%$data) ;
+      $worksheet->write( "A$row", \@headings, $format ) ;
+      $row++ ;
+    }
+    my @cols = map { $data->{$_} } @headings ;
+    $worksheet->write( "A$row", \@cols ) ;
+    $row++ ;
+  }
+  if ( $opt{password} ) {
+
+    # protect the sheet from modification with same password for all sheets
+    $worksheet->protect( $opt{password} ) ;
+  }
+
+  printf("Completed $sheet\n") ;
+}
+### Saving
+# close object create file etc.
+$workbook->close() ;
+

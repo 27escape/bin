@@ -1,0 +1,251 @@
+#!/usr/bin/env perl
+# create nagios .conf files for all of the running virtual hosts on a list of
+# virtual servers
+# this assumes that you have virsh installed, that you have ssh keyless ssh root
+# passwords to the virtual servers and that the virtual servers are running
+# qemu/kvm
+# moodfarm@cpan.org
+
+use 5.16.0;
+use strict;
+use warnings;
+use App::Basis qw( :delaydb);
+use Data::Printer;
+use IPC::Cmd qw(run);
+use File::Slurp qw( write_file);
+use Net::OpenSSH;
+
+my $DUMP_DIR = '/tmp/virt2nagios/hosts';
+my $NAGIOS   = 'core-nagios.inview.local';
+my $FIVE_MINS = 300 ;
+my $DETAIL_FILE = '/tmp/vm_detail.txt' ;
+
+# -----------------------------------------------------------------------------
+
+sub hostinfo {
+    my $host    = shift;
+    my $hostinf = `host $host`;
+    my ( $fullhost, $ip ) = ( $hostinf =~ /(.*?) has address (.*)/ );
+
+    return $fullhost, $ip;
+}
+
+# -----------------------------------------------------------------------------
+# check if nrpe is installed on the host, if not attempt to install it
+sub install_nrpe {
+    my $args     = @_ % 2 ? die "Odd number of values passed where even is expected.\n" : {@_};
+    my $resp     = {};
+    my $userhost = $ENV{USER};
+    if ( $ENV{SSH_USER} && $ENV{SSH_PASSWD} ) {
+        $userhost = "$ENV{SSH_USER}:$ENV{SSH_PASSWD}\@";
+    }
+    elsif ( $ENV{SSH_USER} ) {
+        $userhost = "$ENV{SSH_USER}\@";
+    }
+    elsif ( $ENV{SSH_PASSWD} ) {
+        $userhost .= ":$ENV{SSH_PASSWD}\@";
+    }
+
+    # allow us 5 mins to process what we need to do
+    my $ssh = Net::OpenSSH->new(
+        "$userhost$args->{host}", timeout => $FIVE_MINS, kill_ssh_on_timeout => 1,
+        master_opts => [
+            -o => 'StrictHostKeyChecking no'        # lets add to known_hosts without asking
+        ]
+    );
+    if ( $ssh->error ) {
+        say STDERR "Couldn't establish SSH connection to $args->{host}: " . $ssh->error;
+        return $resp;
+    }
+
+    # lets try to identify the OS
+    my ( $rout, $pid ) = $ssh->pipe_out("cat /etc/issue");
+    if ( $ssh->error ) {
+        say STDERR "Could not determine OS";
+        return $resp;
+    }
+
+    # read the first line of the /etc/issue file
+    my $issue = <$rout>;
+
+    if ( $issue =~ /ubuntu/i ) {
+        $resp->{os}     = 'Ubuntu';
+        $resp->{pkginstall} = 'apt-get install ';
+        $resp->{pkgcheck} = 'apt-cache search ';
+    }
+    elsif ( $issue =~ /debian/i ) {
+        $resp->{os}     = 'debian';
+        $resp->{pkginstall} = 'apt-get install ';
+        $resp->{pkgcheck} = 'apt-cache search ';
+    }
+    elsif ( $issue =~ /suse/i ) {
+        $resp->{os}     = 'suse';
+        $resp->{pkgmgr} = 'zypper install ';
+        $resp->{pkgcheck} = 'zypper search ';
+    }
+    elsif ( $issue =~ /redhat/ ) {
+        $resp->{os}     = 'redhat';
+        $resp->{pkgmgr} = 'yum install ';
+        $resp->{pkgcheck} = 'yum list ';
+    }
+    elsif ( $issue =~ /centos/i ) {
+        $resp->{os}     = 'centos';
+        $resp->{pkgmgr} = 'yum install ';
+        $resp->{pkgcheck} = 'yum list ';
+    }
+
+
+
+    return $resp;
+}
+
+sub store_detail {
+    my $detail = shift ;
+    write_file( $DETAIL_FILE, {append => 1 }, "$detail\n" ) ;
+}
+
+# -----------------------------------------------------------------------------
+
+sub build_nagios_config {
+    my $args = @_ % 2 ? die "Odd number of values passed where even is expected.\n" : {@_};
+    my ( $desc, $address );
+
+    my $vmdir = "$args->{dir}/$args->{vmserver}";
+
+    # we build the config files in a subdir of the main dir
+    system("mkdir -p $vmdir 2>/dev/null");
+    return 0 if ( !-d $vmdir );
+
+    my ( $fullhost, $ip ) = hostinfo( $args->{vmserver} );
+    $address = $ip ? "address         $ip" : "; could not find server IP address";
+    my $cfg = "
+    define host {
+        use             generic-host
+        host_name       $args->{vmserver}
+        alias           $fullhost
+        $address
+        description     'VM Server $args->{vmserver}'
+        $address
+        contact_groups  it-admins
+        hostgroups      vm-hosts
+}";
+    write_file( "$args->{dir}/$args->{vmserver}.cfg", $cfg );
+    store_detail( "$fullhost $args->{vmserver} $ip") ;
+
+    # write the config for the VM server
+
+    foreach my $h ( @{ $args->{hosts} } ) {
+        my $hostname = $h ;
+        $h =~ s/_/-/g ;         # some names may have '_' in them but be '-' in DNS, lets fix that
+        ( $fullhost, $ip ) = hostinfo($h);
+        my $hostgroups = "vm-hosts";
+        if ( !$ip ) {
+            say STDERR "could not find host IP address for $h";
+            $address  = "; could not find host ip address";
+            $fullhost = $h;
+        }
+        else {
+            $address = "address         $ip";
+            # my $resp = install_nrpe( nagios => $args->{nagios}, host => $ip );
+            # my $os = $resp->{os} ? ",$resp->{os}" . '-servers' : "";
+            # $hostgroups .= $os;
+        }
+
+        my $connection = "qemu+ssh://root\@$args->{vmserver}/system";
+
+        # get the info about this domain
+        my $cmd = "virsh -c $connection dumpxml $h";
+        my ( $success, $error_message, $full_buf, $stdout, $stderr ) = run( command => $cmd, timeout => 10 );
+
+        if ($success) {
+            $stdout = $stdout->[0];
+            ($desc) = ( $stdout =~ /\<description\>(.*?)\<\/description\>/i );
+        }
+
+        $desc |= "";
+        $cfg = "
+define host {
+        use             generic-host
+        parents         $args->{vmserver}         ; host this VM is running on
+        display_name    $hostname
+        host_name       $fullhost
+        alias           $h
+        description     $desc
+        $address
+        contact_groups  it-admins
+        hostgroups      $hostgroups
+}";
+
+        store_detail( "$fullhost $hostname $ip") ;
+        write_file( "$vmdir/$hostname.cfg", $cfg );
+    }
+
+    return 1;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+unlink( $DETAIL_FILE) ;
+
+my %opt = init_app(
+    help_text => "Create nagios config files for all running hosts on KVM virtual servers
+  Set SSH_USER and SSH_PASSWD to your user/password to allow you to login if needed
+"
+    , help_cmdline => "$program [--help] [options]
+",
+    options => [
+        'verbose|v'  => 'Dump extra useful information',
+        'hosts|h:s'  => 'CSV list of virtual server controlers',
+        'dir|d:s'    => "directory to dump nagios config files [default: $DUMP_DIR]",
+        'nagios|d:s' => "The nagios monitoring server [default: $NAGIOS]",
+    ]
+);
+
+# set defaults
+$opt{dir}    ||= $DUMP_DIR;
+$opt{nagios} ||= $NAGIOS;
+
+if ( !$opt{hosts} ) {
+    show_usage( 'Missing host parameter', 1 );
+}
+
+if ( $opt{verbose} ) {
+    my $config = get_config();
+    say "Config: " . p($config);
+}
+
+system("mkdir -p $DUMP_DIR 2>/dev/null");
+if ( !-d $opt{dir} ) {
+    msg_exit( "Could not make directory $opt{dir}", 2 );
+}
+
+foreach my $host ( split( /[, ]/, $opt{hosts} ) ) {
+    $host =~ s/^\s+(.*?)/$1/;
+    $host =~ s/(.*?)\s+/$1/;
+
+    my $connection = "qemu+ssh://root\@$host/system";
+
+    # get a list og the VMs on this host
+    my $cmd = "virsh -c $connection list";
+    my ( $success, $error_message, $full_buf, $stdout, $stderr ) = run( command => $cmd, timeout => 10 );
+
+    if ($success) {
+        my @hostlist;
+        foreach my $line ( split( /\n/, $stdout->[0] ) ) {
+            my ( $id, $h, $state ) = ( $line =~ /(\d+)\s+(.*?)\s+(.*)/ );
+            push @hostlist, $h if ( $id && $state eq 'running' );
+        }
+
+        my $state = build_nagios_config(
+            nagios   => $opt{nagios},
+            dir      => $opt{dir},
+            vmserver => $host,
+            hosts    => \@hostlist
+        );
+        say $state ? "Created files for $host" : "Could not create directory for $host";
+    }
+}
+

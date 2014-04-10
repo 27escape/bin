@@ -1,0 +1,200 @@
+#!/usr/bin/perl -w
+# v0.1 2012-02-21 create nice charts from csv data
+# moodfarm@cpan.org
+
+use 5.010;
+
+use strict;
+use warnings;
+use Data::Dumper qw(Dumper);
+$Data::Dumper::Terse = 1;
+
+use lib "/opt/inview/perl_lib";
+use App::Basis qw( :delaydb);
+use Inview::Reports::Chart;
+use Carp qw(croak);
+use File::Slurp ;
+use Try::Tiny;
+use Text::CSV::Slurp ;
+
+# ----------------------------------------------------------------------------
+
+my $VERSION           = '0.1';
+my $default_color     = 'green';
+my $default_delimitor = ',';
+
+use constant REPORT_PREFIX => get_program() . '-';
+
+my $config = get_config();
+
+# ----------------------------------------------------------------------------
+=item constrain_data ( [data => $data, field => $field, constraint => $constraint, append => $append]) {
+
+collate data into a new array, only operates on one column of data
+also takes a constraint argument to allow restricted things to be counted
+append is what is needed to be added back to the field to fix it, ie add minutes back in
+    # to make back into a proper date string add empty seconds back
+    $>constrain_data( [data => $data, field=> 'date', contstraint => '^\d{4}/\d{2}/\d{2} \d{2}:\d{2}', append => ':00']) ;
+    # just get the date
+    $constrain_data( [data => $data, field => 'date', constraint => '^\d{4}/\d{2}/\d{2}']) ;
+
+we should not assume the data is in any order, though we will sort on output
+returns data matching criteria in arrayref of hashref
+
+=cut
+
+sub constrain_data {
+  my $args = @_ % 2 ? croak "Odd number of values passed where even is expected.\n" : { @_ } ;
+  my %matches ;
+  # set arg defaults
+#   $args->{field} ||= '' ;
+#   $args->{constraint} ||= '' ;
+  $args->{append} ||= '' ;
+
+  return undef if( !$args->{data} || !$args->{field}) ;
+
+  if( $args->{data}) {
+    foreach my $record (@{$args->{data}}) {  ### collating [...|          ] % done
+      if( !$args->{constraint}) {
+        $matches{$args->{field}}++ ;
+      } elsif( $record->{ $args->{field}} && $record->{ $args->{field}} =~ /(?<matched>$args->{constraint})/) {
+        $matches{ "$+{matched}$args->{append}"}++ ;
+      }
+    }
+  }
+  # map returns list of anon hashes each of 1 entry
+  return [ map { {$_ => $matches{$_}} } sort keys %matches ] ;
+}
+
+# ----------------------------------------------------------------------------
+# main
+my %opt = init_app(
+  help_text => 'create various graphs from CSV type data.
+type chron - chronological chart, collated number of entries over time
+     dist - collated number of entries spread out
+     pie - classic pie
+     timecard - shows when date related activity happend, bigger dots=more activity'
+    , options       =>  [
+    'filename|f=s'    => 'input csv filename to process'
+    , 'verbose|v'       => 'verbose output'
+    , 'title=s'         => 'chart title [optional]'
+    , 'color|c=s'       => "bar color on chart [default: $default_color]"
+    , 'output|o=s'      => 'output filename'
+    , 'delimitor=s'     => "intput delimitor [default: '$default_delimitor']"
+    , 'type|t=s'        => 'chart type [chron/dist/pie/timecard], for mutiple output separate with comma'
+    , 'collate_field=s' => "(dist/pie chart only) field to collate results against" ]
+);
+
+if( $opt{filename} ne '-' && ! -f $opt{filename}) {
+  show_usage( 'Invalid input filename', 1) ;
+}
+
+say STDERR "Reading data from STDIN" if( $opt{filename} eq '-') ;
+
+show_usage('type option required')
+if ( !$opt{type} || $opt{type} !~ /chron|dist|pie|timecard/i ) ;
+$opt{type}  = lc( $opt{type} );
+
+my $log_data;
+
+# det date defaults
+$opt{color}     ||= $default_color ;
+$opt{delimitor} ||= $default_delimitor ;
+$opt{title} ||= '' ;
+
+# say "opt " . Dumper( \%opt) ;
+
+### loading
+$log_data = Text::CSV::Slurp->load(
+  file                  => $opt{filename}
+  , binary              => 1
+#    , eol       => $/
+  , sep_char            => $opt{delimitor}
+  , allow_loose_quotes  => 1
+#    , allow_white_space   => 1
+) ;
+
+# say "data " . Dumper( $log_data) ;
+
+if ( $log_data && scalar(@$log_data) ) {
+    say "data for $opt{title}:\n" . Dumper($log_data) if ( $opt{verbose} );
+    my @headers = sort keys %{ ${$log_data}[0] };
+# say "headers " . Dumper( \@headers) ;
+    # override the headers
+    if ( $opt{headers} ) {
+      # get headers, spaces not allowed
+      @headers = map { $_ =~ s/ //g; $_; } split( /,/, $opt{headers} );
+    }
+
+    $opt{title} =~ s/ to /_/;
+
+    # tidy filename
+    $opt{title} =~ s|\s|_|g;
+    my $out_filename;
+    if ( $opt{output} ) {
+      $out_filename = $opt{output};
+    }
+    else {
+      $out_filename = $opt{title};
+      $out_filename =~ s/\s|\//_/g;
+      $out_filename = '/tmp/' . $out_filename;
+    }
+
+    my $chart = Inview::Reports::Chart->new();
+
+    # make use of the data to create many outputs if needed
+    $out_filename =~ s/\.\w+$//;
+    foreach my $type ( split( /,/, $opt{type})) {
+      my $created       = 0;
+      my $type_filename = $out_filename;
+
+      # make sure there is no file extension
+      $type =~ s/\s//g;
+      my $collate_field = $opt{collate_field};
+      $collate_field = 'date' if ( $type =~ /chron|timecard/);
+      given ($type) {
+        when (/chron|dist|pie|timecard/) {
+
+          # collating date to nearest hour
+          my $new_data;
+          if ( $collate_field && $collate_field =~ /date|timecard/) {
+            $new_data = constrain_data(
+              data       => $log_data,
+              field      => $collate_field,
+              constraint => '^\d{4}-\d{2}-\d{2}[ |\.]\d{2}:',
+              append     => '00:00'
+            );
+          }
+          else {
+            if ( $collate_field ) {
+              $new_data = constrain_data( data  => $log_data,field => $collate_field) ;
+            } else {
+              say "should collate" ;
+              $new_data = $log_data ;
+              $collate_field = 'elapsed' ;
+              # will exit
+              # show_usage( "collate_field required, cannot process", 1);
+            }
+          }
+
+          my $png = $chart->plot2( $type, $new_data, {
+              field   => $collate_field,
+              title   => $opt{title},
+              color   => $opt{color},
+              verbose => $opt{verbose}
+            }
+          );
+          if ($png) {
+
+            # override created filename
+            $type_filename .= "_$type.png" if ( $type_filename !~ /\.png$/i );
+            $created = 1 if ( write_file( $type_filename, $png ) );
+          }
+        }
+      }
+      say "saved $type_filename" if ( $created && -f $type_filename );
+    }
+}
+else {
+  msg_exit( "Could not find any useful data", 1) ;
+}

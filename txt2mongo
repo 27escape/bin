@@ -1,0 +1,392 @@
+#!/usr/bin/perl -w
+# convert a csv like text file into a mongodb
+# uses Parse::CSV to read the csv files in a line at a time, there is a
+# slight performance penalty here, but we use a lot less memory when processing
+# large (> 1M lines) files, and it does not fill my system
+#
+# (c) kevin Mulholland 2012, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# v0.1 4/10/2012  moodfarm@cpan.org, initial work
+
+use 5.12.0 ;
+use strict ;
+use Data::Dumper qw( Dumper) ;
+use Parse::CSV ;
+use MongoDB ;
+use Date::Manip qw( UnixDate ParseDate) ;
+use Try::Tiny ;
+use Time::Duration ;
+use App::Basis ;
+use App::Basis::Config ;
+
+my $DELIMITOR     = ',' ;
+my $DEFAULT_DSN   = 'mongodb://localhost:27017' ;
+my $DEFAULT_DB    = 'default' ;
+my $DEFAULT_FIELD = 'tags' ;
+my $MIN_LINES     = 500 ;                           # number of lines to process for the scheme guess
+
+# -----------------------------------------------------------------------------
+# guess what a CSV files type is
+
+sub looks_like
+{
+  my $value     = shift ;
+  my $lastGuess = shift || 'NOTSEEN' ;
+  my %colWeight = ( NOTSEEN => 0, BOOL => 1, INT => 2, FLOAT => 3, DATETIME => 4, DATE => 5, TIME => 6, TEXT => 7 ) ;
+
+  return $lastGuess if !defined $value || length($value) < 1 ;
+  return 'BOOL'
+    if $colWeight{$lastGuess} <= $colWeight{BOOL} && ( !defined $value || $value eq '' || $value =~ /^[01]$/ ) ;
+
+  return 'INT'
+    if $colWeight{$lastGuess} <= $colWeight{INT} && $value =~ /^[0-9]+$/ ;
+
+  return 'FLOAT'
+    if $colWeight{$lastGuess} <= $colWeight{FLOAT} && $value =~ /^[0-9]*\.[0-9]+$/ ;
+
+  return 'DATETIME'
+    if $colWeight{$lastGuess} <= $colWeight{DATETIME}
+      && ( $value =~ m|/^\d{1,2}/\d{1,2}/\d{2,4}[\s.]\d{1,2}:\d{1,2}:\d{1,2}\s[AP]M$/i |
+        | $value =~ /^\d{2,4}-\d{1,2}-\d{1,2}[\s.]\d{1,2}:\d{1,2}:\d{1,2}(\+\d{4})?$/ ) ;
+
+  return 'DATE'
+    if $colWeight{$lastGuess} <= $colWeight{DATE}
+      && ( $value =~ m|^\d{1,2}/\d{1,2}/\d{2,4}$| || $value =~ /^\d{2,4}-\d{1,2}-\d{1,2}$/ ) ;
+
+  return 'TIME' if $colWeight{$lastGuess} <= $colWeight{TIME} && $value =~ /^\d{1,2}:\d{1,2}:\d{1,2}(\+\d{4})?$/ ;
+  return 'TEXT' ;
+}
+
+
+# -----------------------------------------------------------------------------
+# stolen from neech and modified
+sub looks_likev2 {
+    local $_ = shift;
+    my $lastGuess = shift || [ ( 'NOTSEEN', 0 ) ];
+    my $maxLen = length($_) > $lastGuess->[1] ? length($_) : $lastGuess->[1];
+    my %colWeight = (
+        NOTSEEN     => 0,
+        BOOL        => 1,
+        INT         => 2,
+        FLOAT       => 3,
+        DATETIME    => 4,
+        DATE        => 5,
+        TIME        => 6,
+        IP          => 7,
+        MAC_ADDRESS => 8,
+        VARCHAR     => 9,
+        TEXT        => 10
+    );
+
+    return $lastGuess if !defined $_ || length($_) < 1;
+    return [ ( 'BOOL', $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{BOOL} && ( !defined $_ || $_ eq '' || /^[01]$/ );
+    return [ ( 'INT', $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{INT} && /^-?[0-9,]+$/;
+    return [ ( 'FLOAT', $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{FLOAT} && /^-?[0-9,]*\.[0-9]+$/;
+
+    return [ ( 'DATETIME', $maxLen ) ]
+        if $colWeight{ $lastGuess->[0] } <= $colWeight{DATETIME}
+        && ( m|^\d{1,2}/\d{1,2}/\d{2,4}[\s.]\d{1,2}:\d{1,2}:\d{1,2}\s[AP]M$|i || /^\d{2,4}-\d{1,2}-\d{1,2}[\s\.T]\d{1,2}:\d{1,2}:\d{1,2}(\+\d{4})?/ );
+    return [ ( 'DATE', $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{DATE} && ( m|^\d{1,2}/\d{1,2}/\d{2,4}$| || /^\d{2,4}-\d{1,2}-\d{1,2}$/ );
+    return [ ( 'TIME', $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{TIME} && /^\d{1,2}:\d{1,2}:\d{1,2}$/;
+
+    return [ ( 'IP',          $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{IP}          && /^(?:\d{1,3}\.){3}\d{1,3}$/;
+    return [ ( 'MAC_ADDRESS', $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{MAC_ADDRESS} && /^(?:[[:xdigit:]]{2}[-:]){5}[[:xdigit:]]{2}$/;
+
+    return [ ( 'VARCHAR', $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{VARCHAR} && length($_) <= 255;
+    return [ ( 'TEXT', $maxLen ) ];
+}
+
+
+# -----------------------------------------------------------------------------
+# find the field types from the passed data
+
+sub find_types
+{
+  my ( $data, $verbose ) = @_ ;
+  return unless defined $data ;
+
+  my $schema = {} ;
+
+  for ( my $i = 0; $i < scalar(@$data); $i++ ) {
+    my $struct = @{$data}[$i] ;
+    while ( my ( $k, $v ) = each %{$struct} ) {
+      my $aref = looks_likev2( $v, $schema->{$k} ) ;
+      $schema->{$k} = $aref if ( $aref ne 'NOTSEEN' ) ;
+    }
+  }
+
+  return $schema ;
+}
+
+# -----------------------------------------------------------------------------
+# add data to a collection
+
+sub addto_collection
+{
+  my ( $collection, $data, $schema ) = @_ ;
+  my $count = 0 ;
+
+  foreach my $d ( @{$data} ) {
+    my $add = 0 ;
+
+    # test if fields empty, do not add it if so
+    map { $add += ( defined $_ && $_ eq '' ) ? 0 : 1 } values %$d ;
+    next if ( !$add ) ;
+
+    # we may need to convert some values into forms suitable for the db
+    map {
+      my $key = $_ ;
+      if ( $schema->{$key} && $schema->{$key} =~ /DATE/ ) {
+
+        # convert date and datetimes to epochs
+        $d->{$key} = int( UnixDate( ParseDate( $d->{$key} ), "%s" ) ) || 0 ;
+      } elsif ( $schema->{$key} && $schema->{$key} =~ /^INT$|^BOOL$/ ) {
+
+        # make sure that we know they are integers
+        $d->{$key} = int( $d->{$key} || 0 ) ;
+      } elsif ( $schema->{$key} && $schema->{$key} =~ /^FLOAT$/ ) {
+
+        # make sure that we know they are floats
+        $d->{$key} = $d->{$key} * 1.0 ;
+      }
+    } keys %$d ;
+
+    # now add to the collection
+    try {
+
+      # my $fred = $collection->insert( $d, { safe => 1 } ) ;
+      my $fred = $collection->insert($d) ;
+      $count++ ;
+    }
+    catch { say "insert error" } ;
+  }
+  return $count ;
+}
+
+# -----------------------------------------------------------------------------
+# process_data
+# convert the csvfile into something that mongo can store
+
+sub process_data
+{
+  my ( $csvfile, $collection_name, $mongodb, $opt ) = @_ ;
+  my %match ;
+  my %extra ;
+
+  # extra data fields to add to each document
+  if ( $opt->{extradata} ) {
+    foreach my $p ( split( /,/, $opt->{extradata} ) ) {
+      $p =~ /^\s?(.*?)\s?:\s?(.*?)\s?$/ ;
+      my ( $k, $v ) = ( $1, $2 ) ;
+      $extra{$k} = $v if ($k) ;
+    }
+  }
+
+  # only add a document if it matches these regexps
+  # note due to using ',' as a separator we cannot have this in the regexp
+  if ( $opt->{match} ) {
+    foreach my $p ( split( /,/, $opt->{match} ) ) {
+      $p =~ /^\s?(.*?)\s?:\s?(.*?)\s?$/ ;
+      my ( $k, $v ) = ( $1, $2 ) ;
+      $match{$k} = $v if ($k) ;
+    }
+  }
+
+  # parse the data and decide if we should pass any through our filtering
+  my $parser = Parse::CSV->new(
+    file     => $csvfile,
+    sep_char => $opt->{delimitor},
+    names    => 1,
+
+    # decide if we want to take this item any further
+    filter => sub {
+      my $data = $_ ;
+      my $add  = 0 ;
+
+      if (%match) {
+        $add = 0 ;
+        foreach my $k ( keys %match ) {
+          $add++ if ( $data->{$k} && $data->{$k} =~ /$match{$k}/i ) ;
+        }
+
+        # needs to match all of the match items
+        return undef if ( $add != scalar( keys %match ) ) ;
+      }
+      return $_ ;
+    },
+  ) ;
+
+  # so lets go ahead and start the collection
+  my $collection = $mongodb->get_collection($collection_name) ;
+  $collection->drop if ( $opt->{create} ) ;
+
+  # now we have the data we need to read a number of lines to decide what this
+  # is as far as mongo is concerned, we cannot just write it out, so we will have
+  # to buffer some and write it out when we read that count, or the end of the data
+  my @buffer ;
+  my $count = 0 ;
+  my $schema ;
+  while ( my $data = $parser->fetch() ) {
+
+    # add in the tags if they are needed
+    if ( $opt->{tags} ) {
+      $data->{ $opt->{tagfield} } = $opt->{tags} ;
+    }
+
+    # add in the extra fields
+    if (%extra) {
+      map { $data->{$_} = $extra{$_} } keys %extra ;
+    }
+
+    # and save it
+    push @buffer, $data ;
+
+    # have we buffered enough to guess the schema and save the data
+    if ( scalar(@buffer) >= $MIN_LINES ) {
+      $schema = find_types( \@buffer ) if ( !$schema ) ;
+      $count += addto_collection( $collection, \@buffer, $schema ) ;
+      my $line_num = sprintf( "%8d lines", $parser->row() ) ;
+      {
+        local $| = 1 ;    # set write flush
+        print "\b" x length($line_num) . $line_num if ( $opt->{verbose} ) ;
+      }
+
+      # and clear the buffer for the next go around
+      @buffer = undef ;
+    }
+  }
+
+  # lets process anything left in the buffers
+  if ( scalar(@buffer) ) {
+
+    # make sure we have a schema, in case this is a small amount of data
+    $schema = find_types( \@buffer ) if ( !$schema ) ;
+    $count += addto_collection( $collection, \@buffer, $schema ) ;
+  }
+
+  # clear anything we verbosely put
+  print "\b" x 60 if ( $opt->{verbose} ) ;
+  return $count ;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $start_t = time() ;
+
+my $program = get_program() ;
+
+my %opt = init_app(
+  help_text => "Convert CSV data into documents for a mongoDB, uses mongodb config entry
+Note that anything that looks like a date or datetime entry will be converted to 
+an epoch number when storing in the database
+"
+  , help_cmdline => "[tablename,]inputfilename ...
+    $program -            (read from stdin)
+    $program filename.csv
+    $program -c collection,csv1.csv
+    $program collection1,csv1.csv collection2,csv2.csv ... collectionx,csvx.csv
+    $program --delimitor=';' filename.csv
+    $program --tags='via_import, txt2mongo' --tagfield='source' collection,filename.csv
+    $program --extradata='user:fred,cluster:test' collection,filename.csv
+    $program --match='user:fred|bill,cluster:t*' collection,filename.csv
+",
+  options => {
+    'delimitor=s' => "delimitor/separator of columns (default: \"$DELIMITOR\")",
+    'create|c'    => 'create new collection, will replace any existing collection',
+    'verbose|v'   => 'Dump extra useful information',
+    'dsn=s'       => 'overdide config DSN (host:port)',
+    'db=s'        => 'overdide config db name',
+    'user=s'      => 'override config username',
+    'passwd=s'    => 'override config password',
+    'tags=s'      => 'additionally add these tag items to each line of the data',
+    'tagfield=s'  => 'name of the tag field',
+    'extradata=s' => 'add these field:data pairs to each line of the data',
+    'match=s'     => 'Only match lines that have all of these field:data matches'
+  }
+) ;
+
+show_usage("Bad arguments") if ( scalar @ARGV < 1 ) ;
+$opt{delimitor} = $DELIMITOR if ( !$opt{delimitor} ) ;
+
+# if we want the pipe symbol, make sure its correct for regexp
+$opt{delimitor} = '|'  if ( $opt{delimitor} eq '|' ) ;
+$opt{delimitor} = "\t" if ( $opt{delimitor} eq '\t' ) ;
+
+# get the connection info
+my ( $dsn, $dbname ) = qw|mongodb://localhost:27017 default| ;
+my ( $user, $passwd ) ;
+my $config = get_config() ;
+if ( $config->{mongodb} ) {
+  $opt{dsn}    = $config->{mongodb}->{dsn} ;
+  $opt{db}     = $config->{mongodb}->{dbname} ;
+  $opt{user}   = $config->{mongodb}->{user} ;
+  $opt{passwd} = $config->{mongodb}->{passwd} ;
+}
+
+show_usage("No mongodb dsn specified anywhere") if ( !$opt{dsn} ) ;
+show_usage("No mongodb db specified anywhere")  if ( !$opt{db} ) ;
+
+$opt{tagfield} ||= $DEFAULT_FIELD ;
+
+# we need the tags as an arrayref
+if ( $opt{tags} ) {
+  my @tags = split( ',', $opt{tags} ) ;
+  $opt{tags} = \@tags ;
+}
+if ( $opt{verbose} ) {
+  say "Connecting to $opt{db} on $opt{dsn}" ;
+}
+
+# connect to mongo
+my $conn ;
+
+if ( $opt{user} ) {
+  $conn = MongoDB::Connection->new( host => $opt{dsn}, username => $opt{user}, password => $opt{passwd} ) ;
+} else {
+  $conn = MongoDB::Connection->new( host => $opt{dsn} ) ;
+}
+
+# connect to the database, need to do this explicitly
+my $mongodb = $conn->get_database( $opt{db} ) ;
+
+my $count = 1 ;
+
+# now process the files listed on the command line
+foreach my $name (@ARGV) {
+  my $infilename ;
+  my $collection_name ;
+
+  # either filename or "collection_name,filename"
+  my ( $a, $b ) = split( /,/, $name ) ;
+
+  # if no collection_name then add a default
+  if ( !$b ) {
+    $infilename = $a ;
+
+    # use the filename up to any '.' as the collection_name name
+    $a =~ m/(\w+)\.\w+$/ ;
+
+    # name the collection_name
+    $collection_name = $1 ? $1 : "collection_name_$count" ;
+    $count++ ;
+  } else {
+    $infilename      = $b ;
+    $collection_name = $a ;
+  }
+
+  # make sure the collection_name name is ok
+  $collection_name =~ s/^\s+(.*?)\s+$/$1/ ;    # trim leading/trailing whitespace
+  $collection_name =~ s/[- ]/_/g ;             # replace minus/space with underscore
+  $collection_name =~ s/["']//g ;              # remove double quotes
+  $infilename      =~ s/^~/$ENV{HOME}/ ;       # fix up the path to
+
+  my $added = process_data( $infilename, $collection_name, $mongodb, \%opt ) ;
+  say "added $added items from $infilename to $collection_name" if ( $opt{verbose} ) ;
+}
+
+if ( $opt{verbose} ) {
+  my $duration = concise( duration( time() - $start_t ) ) ;
+  say "Insert took $duration" ;
+}

@@ -1,0 +1,412 @@
+#!/usr/bin/perl -w
+# script to extract a range of colums/rows from an excel spreadsheet
+# and present it as a sql insert statements, there is also the option to rotate the
+# output, the 1st row of the data MUST be the field headers strings, if it
+# contains numbers then defaults will be created field[1..x]
+#
+# (c) kevin Mulholland 2009, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+# v0.1  3/11/2009
+# based in part on my xls2csv perl script
+# 28/09/2011 moodfarm@cpan.org
+
+use 5.010 ;
+
+use strict ;
+use warnings ;
+use Spreadsheet::ParseExcel ;
+use Data::Dumper qw( Dumper) ;
+use utf8 ;
+use App::Basis ;
+
+# -----------------------------------------------------------------------------
+### col2int
+# converts a excel row letter into an int for use in an array
+#
+sub col2int
+{
+  my $result = 0 ;
+  my $str    = shift ;
+  my $incr   = 0 ;
+
+  for ( my $i = length($str); $i > 0; $i-- ) {
+    my $char = substr( $str, $i - 1 ) ;
+    my $curr += ord( lc($char) ) - ord('a') + 1 ;
+    $curr *= $incr if ($incr) ;
+    $result += $curr ;
+    $incr   += 26 ;
+  }
+
+  # this is one out as we range 0..x-1 not 1..x
+  $result-- ;
+
+  return $result ;
+}
+
+# -----------------------------------------------------------------------------
+### int2col
+# convert a column number into column letters
+# @note this is quite a brute force coarse method
+#   does not manage values over 701 (ZZ)
+#   but thats OK as Excel only goes up to IV
+# @arg number, to convert
+# @returns string, column name
+#
+sub int2col
+{
+  my $out = "" ;
+  my $val = shift ;
+
+  do {
+    $out .= chr( ( $val % 26 ) + ord('A') ) ;
+    $val = int( $val / 26 ) - 1 ;
+  } while ( $val >= 0 ) ;
+
+  return reverse $out ;
+}
+
+# -----------------------------------------------------------------------------
+### sheetRef
+# convert an excel letter-number address into a useful array address
+# @note that also Excel uses X-Y notation, we normally use Y-X in arrays
+# @args $str, excel coord eg. A2
+# @returns an array - 2 elements - column, row, or undefined
+#
+sub sheetRef
+{
+  my $str = shift ;
+  my @ret ;
+
+  $str =~ m/^(\D+)(\d+)$/ ;
+
+  if ( $1 && $2 ) {
+    push( @ret, $2 - 1, col2int($1) ) ;
+  }
+  if ( $ret[0] < 0 ) {
+    undef @ret ;
+  }
+
+  return @ret ;
+}
+
+# -----------------------------------------------------------------------------
+### xls2data
+# convert a chunk of an excel file into an array of arrays
+# @args $param, sheet-colrow:colrow (1-A1:B2 or A1:B2 for sheet 1
+# @args $rotate, 0 or 1 decides if output should be rotated or not
+# @returns string containing a chunk of csv
+#
+sub xls2data
+{
+  my ( $filename, $regions, $rotate, $columns ) = @_ ;
+  my $sheet  = 0 ;
+  my $hush   = 0 ;
+  my @output = () ;
+  my %allowed ;
+  %allowed = map { col2int($_) => 1 } ( split( /,/, $columns ) ) if ($columns) ;
+
+  # start the excel object now
+  my $oExcel = new Spreadsheet::ParseExcel ;
+  my $oBook  = $oExcel->Parse($filename) ;
+  show_usage( "Could not parse file $filename", 2 ) if ( !$oBook ) ;
+
+  if ( !$regions || $regions eq 'all' ) {
+
+    # cheating, leave the range finding to later
+    $regions = "1-A1:ZZZZ100000000" ;
+    $hush    = 1 ;
+  }
+
+  # extract any sheet number from the region string
+  $regions =~ m/^(\d+)-(.*)/ ;
+
+  if ($2) {
+    $sheet   = $1 - 1 ;
+    $regions = $2 ;
+  }
+
+  # now extract the start and end regions
+  $regions =~ m/(.*):(.*)/ ;
+  my ( $rstart, $rend ) = ( $1, $2 ) ;
+
+  show_usage( "Bad Params", 2 ) if ( !$rstart || !$rend ) ;
+
+  my @start = sheetRef($rstart) ;
+  my @end   = sheetRef($rend) ;
+  show_useage( "Bad coorinates - $rstart", 2 ) if ( !@start ) ;
+  show_useage( "Bad coorinates - $rend",   2 ) if ( !@end ) ;
+
+  if ( $start[1] > $end[1] ) {
+    show_usage( "Bad COLUMN ordering\nStart column " . int2col( $start[1] ) . " after end column " . int2col( $end[1] ), 2 ) ;
+  }
+  if ( $start[0] > $end[0] ) {
+    show_usage( "Bad ROW ordering\nStart row " . ( $start[0] + 1 ) . "after end row " . ( $end[0] + 1 ), 2 ) ;
+  }
+
+  # now check that the region exists in the file
+  my $oWkS = $oBook->{Worksheet}[$sheet] ;
+
+  # if not trucate to the possible region
+  # output a warning msg
+  if ( $start[1] < $oWkS->{MinCol} ) {
+    print int2col( $start[1] ) . " < min col " . int2col( $oWkS->{MinCol} ) . " Reseting\n" if ( !$hush ) ;
+    $start[1] = $oWkS->{MinCol} ;
+  }
+  if ( $end[1] > $oWkS->{MaxCol} ) {
+    print int2col( $end[1] ) . " > max col " . int2col( $oWkS->{MaxCol} ) . " Reseting\n" if ( !$hush ) ;
+    $end[1] = $oWkS->{MaxCol} ;
+  }
+  if ( $start[0] < $oWkS->{MinRow} ) {
+    print "" . ( $start[0] + 1 ) . " < min row " . ( $oWkS->{MinRow} + 1 ) . " Reseting\n" if ( !$hush ) ;
+    $start[0] = $oWkS->{MinCol} ;
+  }
+  if ( $end[0] > $oWkS->{MaxRow} ) {
+    print "" . ( $end[0] + 1 ) . " > max row " . ( $oWkS->{MaxRow} + 1 ) . " Reseting\n" if ( !$hush ) ;
+    $end[0] = $oWkS->{MaxRow} ;
+  }
+
+  my $x1 = $start[1] ;
+  my $y1 = $start[0] ;
+  my $x2 = $end[1] ;
+  my $y2 = $end[0] ;
+
+  my @heading_list = () ;
+  if ( !$rotate ) {
+    my $row     = 0 ;
+    my %heading = () ;
+    for ( my $y = $y1; $y <= $y2; $y++ ) {
+      my %data = () ;
+      for ( my $x = $x1; $x <= $x2; $x++ ) {
+        if ( !%allowed || $allowed{$x} ) {
+          my $cell = $oWkS->{Cells}[$y][$x] ;
+          my $v = $cell && $cell->Value ? $cell->Value : "" ;
+          $v =~ s/'/''/g ;     # escape single quotes to 2 single quotes
+          $v =~ s/^\s+// ;     # trim leading whitespace
+          $v =~ s/\s+$// ;     # trim trailing whitespace
+          $v =~ s/\n/ /sg ;    # replace new lines with spaces
+          $v =~ s/\r//sg ;     # remove carridge returns
+          $v =~ s/"//g ;       # remove double quotes
+
+          if ( !$row ) {
+            $v =~ s/-/_/g ;       # replace minus with underscore to keep things simple
+            $v =~ s/\(|\)//g ;    # remove any brackets
+            $v =~ s/\s/_/g ;      # replace spaces
+            $heading{$x} = lc($v) ;    # headings are alwaqys lowercase
+            push @heading_list, $heading{$x} ;
+          } else {
+
+            #if the field looks like a english date we will re-format it to be a proper date
+            if ( $v =~ /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/ ) {
+              my $year = $3 ;
+              $year += 2000 if ( $year < 20 ) ;
+              $year += 1900 if ( $year < 99 ) ;
+              $v = sprintf( "%4d-%02d-%02d", $year, $2, $1 ) ;
+            }
+            $data{ $heading{$x} } = $v ;
+          }
+        }
+      }
+      push @output, \%data if ( $row++ ) ;
+    }
+  } else {
+    my $row     = 0 ;
+    my %heading = () ;
+    for ( my $x = $x1; $x <= $x2; $x++ ) {
+      my %data = () ;
+      for ( my $y = $y1; $y <= $y2; $y++ ) {
+        if ( !%allowed || $allowed{$y} ) {
+          my $cell = $oWkS->{Cells}[$y][$x] ;
+          my $v = $cell && $cell->Value ? $cell->Value : "" ;
+          $v =~ s/'/''/g ;     # escape single quotes to 2 single quotes
+          $v =~ s/"//g ;       # remove double quotes
+          $v =~ s/^\s+// ;     # trim leading whitespace
+          $v =~ s/\s+$// ;     # trim trailing whitespace
+          $v =~ s/\n/ /sg ;    # replace new lines with spaces
+          $v =~ s/\r//sg ;     # remove carridge returns
+          $v =~ s/"//g ;       # remove double quotes
+
+          if ( !$row ) {
+            $v =~ s/-/_/g ;       # replace minus with underscore to keep things simple
+            $v =~ s/\(|\)//g ;    # remove any brackets
+            $v =~ s/\s/_/g ;      # replace spaces
+            $heading{$x} = lc($v) ;    # headings are alwaqys lowercase
+            push @heading_list, $heading{$x} ;
+          } else {
+
+            #if the field looks like a english date we will re-format it to be a proper date
+            if ( $v =~ /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/ ) {
+              my $year = $3 ;
+              $year += 2000 if ( $year < 20 ) ;
+              $year += 1900 if ( $year < 99 ) ;
+              $v = sprintf( "%4d-%02d-%02d", $year, $2, $1 ) ;
+            }
+            $data{ $heading{$x} } = $v ;
+          }
+        }
+      }
+      push @output, \%data if ( $row++ ) ;
+    }
+  }
+
+  return ( \@output, \@heading_list ) ;
+}
+
+# -----------------------------------------------------------------------------
+# stolen from neech and modified
+sub looks_like
+{
+  local $_ = shift ;
+  my $lastGuess = shift || [ ( 'NOTSEEN', 0 ) ] ;
+  my $maxLen = length($_) > $lastGuess->[1] ? length($_) : $lastGuess->[1] ;
+  my %colWeight = ( NOTSEEN => 0, BOOL => 1, INT => 2, FLOAT => 3, DATETIME => 4, DATE => 5, TIME => 6, VARCHAR => 7, TEXT => 8 ) ;
+
+  return $lastGuess if !defined $_ || length($_) < 1 ;
+  return [ ( 'BOOL', $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{BOOL} && ( !defined $_ || $_ eq '' || /^[01]$/ ) ;
+  return [ ( 'INT', $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{INT} && /^[0-9]+$/ ;
+  return [ ( 'FLOAT',    $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{FLOAT}    && /^[0-9]*\.[0-9]+$/ ;
+  return [ ( 'DATETIME', $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{DATETIME} && /^\d{2,4}-\d{1,2}-\d{1,2}\s\d{1,2}:\d{1,2}:\d{1,2}$/ ;
+  return [ ( 'DATE',     $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{DATE}     && /^\d{2,4}-\d{1,2}-\d{1,2}$/ ;
+  return [ ( 'TIME',     $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{TIME}     && /^\d{1,2}:\d{1,2}:\d{1,2}$/ ;
+  return [ ( 'VARCHAR',  $maxLen ) ] if $colWeight{ $lastGuess->[0] } <= $colWeight{VARCHAR}  && length($_) <= 255 ;
+  return [ ( 'TEXT',     $maxLen ) ] ;
+}
+
+# -----------------------------------------------------------------------------
+# stolen from neech, replaced $_ with $v to stop it messing with the
+# syntax highlighter!
+sub round_up
+{
+  my $v = shift || 0 ;
+  $v += 10 if $v >= 10 ;    # A little extra space
+  my @snap  = qw(1 4 8 16 32 48 64) ;
+  my $multi = 10 ;
+
+  my $sret ;
+  for my $snap (@snap) {
+    if ( $snap >= $v ) {
+      $sret = $snap ;
+      last ;
+    }
+  }
+
+  my $mret =
+    $v % $multi
+    ? ( ( int( $v / $multi ) * $multi ) + $multi )
+    : $v ;
+  $mret ||= $multi ;
+
+  return defined $sret && $sret <= $mret ? $sret : $mret ;
+}
+
+# -----------------------------------------------------------------------------
+# stolen from neech and modified
+sub generate_schema
+{
+  my ( $table, $data, $key_order, $primary_keys ) = @_ ;
+  return unless defined $table && defined $data ;
+
+  my $schema = {} ;
+  for my $struct ( @{$data} ) {
+    while ( my ( $k, $v ) = each %{$struct} ) {
+      my $k = lc($k) ;
+      my $aref = looks_like( $v, $schema->{$k} ) ;
+      $schema->{$k} = $aref if ( $aref->[0] ne 'NOTSEEN' ) ;
+    }
+  }
+
+  my @columns = () ;
+  my @columns_order = @$key_order ? @$key_order : sort keys %{$schema} ;
+  for my $column (@columns_order) {
+    next if ( !$schema->{$column} ) ;
+    my ( $type, $length ) = @{ $schema->{$column} } ;
+    push @columns, sprintf( "\t'%s' %s%s", $column, $type, ( grep( $_ eq $type, qw(VARCHAR INT) ) ? '(' . round_up($length) . ')' : '' ), ) ;
+  }
+
+  my $primarykey = $primary_keys ? ",\n\tPRIMARY KEY ($primary_keys)" : '' ;
+
+  my $sql = "CREATE TABLE IF NOT EXISTS '$table' (\n" . join( ",\n", @columns ) . $primarykey . "\n) ;\n" ;
+  return ( $schema, $sql ) ;
+}
+
+# -----------------------------------------------------------------------------
+# stolen from neech, and modified
+# prints the table info as soon as it finds it, makes piping into other commands
+# that bit faster
+sub write_table
+{
+  my ( $table, $dat, $drop, $key_order, $replace, $primary_keys ) = @_ ;
+  return unless defined $dat && ref($dat) eq 'ARRAY' ;
+  $replace = $replace ? "OR REPLACE" : "" ;
+
+  print "BEGIN ;\n" ;
+  print "DROP TABLE IF EXISTS '$table' ; \n" if ($drop) ;
+  my ( $schema, $sql ) = generate_schema( $table, $dat, $key_order, $primary_keys ) ;
+  print "$sql\n" ;
+
+  # decide on the order of the keys
+  my @columns = () ;
+  if ( scalar @$key_order ) {
+    foreach my $key (@$key_order) {
+
+      # supplied keys only valid if they are in the schema
+      push @columns, $key if ( $schema->{$key} ) ;
+    }
+  } else {
+    @columns = sort keys %{$schema} ;
+  }
+
+  foreach my $d ( @{$dat} ) {
+    my $add = 0 ;
+
+    # test if all empty, do not add it if so
+    map { $add += $_ eq '' ? 0 : 1 } values %$d ;
+    if ($add) {
+      print "INSERT $replace INTO '$table' (" . join( ', ', map {"'$_'"} @columns ) . ") VALUES (" . join( ', ', map {"'$d->{$_}'"} @columns ) . ") ;\n" ;
+    }
+  }
+  print "COMMIT ;\n" ;
+}
+
+# ----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+my %opt     = init_app(
+  help_text => "Convert an Excel spreadsheet into SQL insert/replace statements
+    $program --range='1-A1:A12' filename.xls tablename
+    $program --rotate filename.xls tablename
+"
+  , help_cmdline => 'filename tablename
+    filename                  the name of the spreadsheet to convert
+    tablename                 the name of the database table to add to or create
+',
+  options => {
+    'rotate|r' => 'rotate input data, columns become rows',
+    'columns'  => 'A,B,D     select columns required for output',
+    'create'   => 'create a new table called tablename',
+    'replace'  => 'create replace rather than insert SQL statements',
+    'range=s'  => 'sheet-colrow:colrow   choose which workbook and column range to extract defaults to sheet 1 all rows/columns',
+    'key'      => 'comma separated list of heads that should become primary keys'
+  }
+) ;
+
+show_usage() if ( !$ARGV[0] ) ;
+
+my $rotate = 0 ;
+
+my $filename = $ARGV[0] ;
+my $table    = $ARGV[1] ;
+$opt{range} = 'all' if ( !$opt{range} ) ;
+
+show_usage("File $filename does not exist") if ( !-f $filename || !-r $filename ) ;
+show_usage("Table name missing") if ( !$table ) ;
+
+# make sure the table name is ok
+$table =~ s/^\s+(.*?)\s+$/$1/ ;    # trim leading/trailing whitespace
+$table =~ s/[- ]/_/g ;             # replace minus with underscore
+$table =~ s/["']//g ;              # remove double quotes
+
+$filename =~ s/^~/$ENV{HOME}/ ;
+my ( $data, $keys ) = xls2data( $filename, $opt{range}, $opt{rotate}, $opt{columns} ) ;
+write_table( $table, $data, $opt{create}, $keys, $opt{replace}, $opt{key} ) ;
+print "\n\n" ;

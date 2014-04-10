@@ -1,0 +1,271 @@
+#!/usr/bin/perl -w
+# read a google mail account and perform some actions based on what it sees
+# moodfarm@cpan.org
+
+# kmulholland, v0.1, 2012-08-21
+
+use 5.014 ;
+use strict ;
+use warnings ;
+
+use App::Basis ;
+use App::Basis::Config ;
+use File::Slurp qw( read_file write_file) ;
+use File::Basename ;
+use Try::Tiny ;
+use Net::IMAP::Simple ;
+use Email::Simple ;
+use Email::Valid ;
+use POSIX qw(strftime) ;
+use Date::Manip qw( UnixDate ParseDate) ;
+use IPC::Cmd ;
+use YAML ;
+use Data::Printer ;
+
+# ----------------------------------------------------------------------------
+use constant ACCOUNTS           => "/home/kmulholland/git/data/accounts.yaml" ;
+use constant GOOGLE_SERVER      => "imap.gmail.com" ;
+use constant PROCESSED_FILE     => "$ENV{HOME}/.gmail_action" ;
+use constant DEFAULT_CYCLE_TIME => 30 ;
+
+my $VERSION = '0.1' ;
+my $daemon  = 0 ;
+
+# ----------------------------------------------------------------------------
+# cache_key
+# create a key for the processed cache based on the passed hashref fields
+sub cache_key
+{
+    my ( $rec, $field ) = @_ ;
+
+    my $key = join( '-', ( @{ $rec->{to} }, $rec->{from}, $rec->{date}, $field ) ) ;
+
+    return $key ;
+}
+
+# ----------------------------------------------------------------------------
+# fetch all emails in a folder after a date
+
+sub fetch_emails
+{
+    my ( $user, $pass, $folder, $processed ) = @_ ;
+    my @emails ;
+
+    # connect to google imap
+    my $imap = Net::IMAP::Simple->new(
+        GOOGLE_SERVER,
+        port    => 993,
+        use_ssl => 1,
+        debug   => 0,
+    ) ;
+    if ( !$imap ) {
+        say STDERR "Unable to connect to IMAP: $Net::IMAP::Simple::errstr" ;
+        return ;
+    }
+
+    # Log on
+    if ( !$imap->login( $user, $pass ) ) {
+        say STDERR "Login failed: " . $imap->errstr . "\n" ;
+        return ;
+    }
+
+    # make sure we are working on the right folder
+    my $nm = $imap->select($folder) ;
+
+    # no messages or some issue
+    return if ( !$nm ) ;
+
+    for ( my $i = 1; $i <= $nm; $i++ ) {
+        try {
+            my %rec ;
+            my $head = Email::Simple->new( join '', @{ $imap->top($i) } ) ;
+
+            # check if the date is in range
+            my $curr = UnixDate( ParseDate( $head->header('Date') ), "%s" ) ;
+            $rec{date} = $curr ;
+
+            my @to = () ;
+            foreach my $h (qw(To Cc Bcc)) {
+                my $v = $head->header($h) ;
+                next if ( !$v ) ;
+                foreach my $s ( split( ',', $v ) ) {
+
+                    # just get the email addr part
+                    $s =~ s|.*?<(.*)>.*|$1|gsm ;
+                    next if ( !Email::Valid->address($s) ) ;
+                    push @to, $s ;
+                }
+            }
+            $rec{to}   = \@to ;
+            $rec{from} = $head->header('From') ;
+
+            # just the email address bit
+            $rec{from} =~ s|.*?\<(.*)\>.*|$1| ;
+            $rec{subject} = $head->header('Subject') ;
+            my $key = cache_key( \%rec, $folder ) ;
+
+            # check if we have seen this before
+            if ( !$processed->{$key} ) {
+                $rec{cache_key} = $key ;
+
+                # we are happy that this is a new email, so lets fetch it
+                my $es = Email::Simple->new( join '', @{ $imap->get($i) } ) ;
+
+                $rec{body} = $es->body() ;
+
+                # only pick out a text/plain part of the body
+                $rec{body} =~ s|^--(.*?)\nContent-Type: text/plain;.*?\n(.*)\n--\1(.*)|$2|gsmi ;
+                $rec{body} =~ s|^content-.*?\n||gsmi ;
+                $rec{body} =~ s|^\s+||gsm ;
+
+                push @emails, \%rec ;
+            }
+        }
+        catch {
+            say STDERR "Some error $@" ;
+        } ;
+    }
+
+    $imap->quit ;
+    return \@emails ;
+}
+
+# ----------------------------------------------------------------------------
+# fetch_rules
+# get valid rules from the control file, errors to STDERR
+sub fetch_rules
+{
+    my $control = shift ;
+    my @rules ;
+
+    foreach my $action ( @{ $control->{actions} } ) {
+        my $ok = 0 ;
+
+        # check email addresses
+        if ( $action->{to} && !Email::Valid->address( $action->{to} ) ) {
+            say STDERR "Invalid to email address ($action->{to} in $action->{label}" ;
+            next ;
+        }
+        if ( $action->{from} && !Email::Valid->address( $action->{from} ) ) {
+            say STDERR "Invalid from email address ($action->{from} in $action->{label}" ;
+            next ;
+        }
+
+        push @rules, $action ;
+    }
+
+    return @rules ;
+}
+
+# ----------------------------------------------------------------------------
+# main
+my %opt = init_app(
+    help_text => 'Do actions on gmail based on contents of email and file actions',
+    options   => {
+        'file|f=s'  => 'YAML control file',
+        'daemon|d'  => 'run as a daemon, otherwise its run in the foreground',
+        'once|o'    => 'just run one time',
+        'verbose|v' => 'explain whats going on'
+    }
+) ;
+
+my $cfg = App::Basis::Config->new( filename => $ACCOUNTS ) ;
+
+my ( $processed ) ;
+
+try {
+    $processed = YAML::LoadFile(PROCESSED_FILE) ;
+}
+catch { say "error processing " . PROCESSED_FILE ;} ;
+
+my $control ;
+
+if ( $opt{file} ) {
+    $opt{file} =~ s/^~/$ENV{HOME}/ ;
+
+    show_usage("Input file does not exist - $opt{file}") if ( !-f $opt{file} ) ;
+
+    try {
+        $control = YAML::LoadFile( $opt{file} ) ;
+    }
+    catch {
+        show_usage("Bad YAML data in $opt{file} : $@") ;
+    } ;
+} else {
+    show_usage("file option is required") ;
+}
+
+my $account = $control->{account} ;
+show_usage("field 'account' is missing from $opt{file}") if ( !$account ) ;
+show_usage("Could not match to a google account") if ( !$cfg->("/accounts/$account") ) ;
+
+my $user = $cfg->get('/accounts/$account/user') ;
+my $pass = $cfg->get('/accounts/$account/pass') ;
+        
+msg_exit( "Could not find pushover in account file", 2) if( !$user && !$pass) ;
+
+my @rules = fetch_rules($control) ;
+msg_exit( "No valid rules", 2 ) if ( !@rules ) ;
+if ( !$control->{cycle_time} ) {
+    $control->{cycle_time} = DEFAULT_CYCLE_TIME ;
+    say "Setting cycle time to default";
+}
+
+# start the daemon process if needed
+
+if ( $opt{daemon} ) {
+    try {
+        # parent should exit
+        exit(0) if ( !daemonise() ) ;
+        $daemon = 1 ;
+    }
+    catch {
+        msg_exit( 'Failed to create daemon process', 1 ) ;
+    } ;
+} else {
+    say 'running in foreground' if ( $opt{verbose} ) ;
+}
+
+# lets run through this once if not a daemon
+do {
+    foreach my $rule (@rules) {
+        my $emails = fetch_emails( $user, $pass, $rule->{label}, $processed ) ;
+        foreach my $mail (@$emails) {
+            my $nowstr = strftime( "%Y-%m-%d %H:%M:%S", localtime( time() ) ) ;
+            my $status = "ignored on $nowstr" ;
+            my $done   = 1 ;
+
+            # say " email " . p( $mail ) if( $opt{verbose}) ;
+            # say " rule " . p( $rule) if( $opt{verbose}) ;
+            # check to from subject body
+            $done = 0 if ( $rule->{to}      && !grep( $rule->{to}, @{ $mail->{to} } ) ) ;
+            $done = 0 if ( $rule->{from}    && $rule->{from} !~ /$mail->{from}/i ) ;
+            $done = 0 if ( $rule->{subject} && $mail->{subject} !~ /$rule->{subject}/i ) ;
+            $done = 0 if ( $rule->{body}    && $mail->{body} !~ /$rule->{body}/gsmi ) ;
+
+            if ($done) {
+                $status = { matched => "Matched on $nowstr" } ;
+
+                # do action
+                my $cmd = $rule->{activity} ;
+                $cmd =~ s|\$subject|$mail->{subject}|gsmi ;
+                $cmd =~ s|\$body|$mail->{body}|gsmi ;
+                my $datestr = strftime( "%Y-%m-%d %H:%M:%S", localtime( $mail->{date} ) ) ;
+                $cmd =~ s|\$date|$datestr}|gsmi ;
+                say "matched $rule->{label}" if ( $opt{verbose} && !$daemon) ;
+                $status->{command} = $cmd ;
+                my ($cmd_status, $o, $e) = run_cmd( command => $cmd ) ;
+
+                $status->{result} = $cmd_status ;
+            }
+            $processed->{ $mail->{cache_key} } = $status ;
+            YAML::DumpFile( PROCESSED_FILE, $processed ) ;
+        }
+    }
+    say p($processed) if ( $opt{verbose} ) ;
+
+    # wait for the next cycle
+    say "Sleeping" if ( $opt{verbose} && !$daemon) ;
+    sleep( 60 * $control->{cycle_time} ) if ($daemon) ;
+} while ( !$opt{once} ) ;
+

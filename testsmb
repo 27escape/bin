@@ -1,0 +1,63 @@
+#!/usr/bin/env perl
+# from boilerplate 
+# moodfarm@cpan.org
+
+use 5.16.0;
+use strict;
+use warnings;
+use App::Basis qw( :delaydb);
+use Data::Printer;
+use Filesys::SmbClientParser;
+use Capture::Tiny qw(capture_stderr);
+
+my $server   = "euromirror";
+my $user     = "User1";
+my $password = "Password1";
+my $domain   = 'INVIEW';
+my $share    = "User02";
+
+my $smb;
+
+# -----------------------------------------------------------------------------
+# there seems to be an issue with smbclient dumping some extra data to STDERR
+# so we will capture and ignore it
+
+sub samba {
+    my ( $cmd, @params ) = @_;
+    my @return;
+
+    capture_stderr {
+        @return = $smb->$cmd(@params);
+    };
+
+    return @return;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text    => "Boiler plate code for an Inview App",
+    help_cmdline => "$program [--help] [options] other things",
+    options      => [ 'verbose|v' => 'Dump extra useful information', ]
+);
+
+$smb = new Filesys::SmbClientParser(
+    undef,
+    (   host     => $server,
+        user     => $user,
+        password => $password,
+        share    => $share,
+        domain   => $domain,
+        Debug    => '0'
+    )
+);
+
+my @l;
+samba( 'cd', 'CarEuroentry00/Source_Advert00' );
+
+@l = samba('dir');
+foreach (@l) { print $_->{name}, "\n"; }
+

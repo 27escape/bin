@@ -1,0 +1,65 @@
+#!/usr/bin/env perl
+#!/usr/bin/perl -w
+# use the pushover service to send messages to my tablet or phone
+# TODO limit message to 500 chars
+# moodfarm@cpan.org
+
+use 5.014 ;
+
+use strict ;
+use warnings ;
+use App::Basis ;
+use App::Basis::Config ;
+use WebService::Pushover;
+use Try::Tiny ;
+
+# ----------------------------------------------------------------------------
+my $ACCOUNTS = "/home/kmulholland/git/data/accounts.yaml" ;
+# ----------------------------------------------------------------------------
+
+# main
+my %opt = init_app(
+  help_text       => 'Send messages via Pushover.net'
+  , help_cmdline  => 'Message to send'
+  , options       =>  {
+    'device|d=s'    => 'Send to a specific device'
+    , 'title|t=s'   => 'title for the message (optional)'
+    , 'priority|p'  => 'send with heightened priority'
+    , 'url|u=s'     => 'Optional URL to attach to the message'
+    , 'url_title=s' => 'Give any passed URL a title'
+  }
+) ;
+ 
+my $cfg = App::Basis::Config->new( filename => $ACCOUNTS ) ;
+
+# I just use one fixed pushover account
+my $user = $cfg->get('/accounts/pushover/name') ;
+my $pass = $cfg->get('/accounts/pushover/pass') ;
+        
+msg_exit( "Could not find pushover in account file", 2) if( !$user && !$pass) ;
+
+my $push = WebService::Pushover->new()
+  or die( "Unable to instantiate WebService::Pushover.\n" ) ;
+ 
+$opt{device} = 'a500' if( $opt{device} && $opt{device} =~ /tablet/i) ;
+$opt{device} = 'S2' if( $opt{device} && $opt{device} =~ /phone/i) ;
+delete $opt{device} if( $opt{device} && $opt{device} =~ /all/i) ;
+
+my $message = join( ' ', @ARGV) ;
+show_usage( "You need a message") if( !$message) ;
+
+my %params = (
+  token       => $pass
+  , user      => $user
+  , message   => $message
+) ;
+
+# add optional things
+foreach my $o ( qw/device title priority url url_title/) {
+  $params{$o} = $opt{$o} if( $opt{$o}) ;
+}
+
+my $status = $push->message( %params ) ;
+if( !$status) {
+  msg_exit( 'Failed to send: ' . $status->{errors}, 1) ;
+}

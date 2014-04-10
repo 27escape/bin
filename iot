@@ -1,0 +1,110 @@
+#!/usr/bin/env perl
+# fetch/update mp3 downloads from BBC In Our Time
+#
+# (c) kevin Mulholland 2014, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# v0.1 moodfarm@cpan.org, initial work
+
+use 5.16.0;
+use strict;
+use warnings;
+use App::Basis;
+use Data::Printer;
+use XML::FeedPP;
+use Path::Tiny;
+use Furl;
+
+# -----------------------------------------------------------------------------
+
+my %iot_feeds = (
+    all        => 'http://downloads.bbc.co.uk/podcasts/radio4/iot/rss.xml',
+    culture    => 'http://downloads.bbc.co.uk/podcasts/radio4/iotc/rss.xml',
+    history    => 'http://downloads.bbc.co.uk/podcasts/radio4/ioth/rss.xml',
+    philosophy => 'http://downloads.bbc.co.uk/podcasts/radio4/iotp/rss.xml',
+    religion   => 'http://downloads.bbc.co.uk/podcasts/radio4/iotr/rss.xml',
+    science    => 'http://downloads.bbc.co.uk/podcasts/radio4/iots/rss.xml',
+);
+
+my $target_dir = "~/Videos/IOT";
+
+# -----------------------------------------------------------------------------
+
+sub other_debug {
+    my $debug = shift;
+    say localtime() . " " . get_program() . " " . $debug;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text    => "Obtain 'In Our Time' recordings from the BBC",
+    help_cmdline => "other things",
+    options      => {
+        'verbose|v'  => 'Dump extra useful information',
+        'fetch|f'    => { desc => 'fetch the recordings', },
+        'target|t=s' => {
+            default => $target_dir,
+            desc    => 'where to store fetched files',
+        }
+    }
+);
+
+$opt{target} = fix_filename( $opt{target} );
+
+path( $opt{target} )->mkpath if ( $opt{fetch} );
+
+msg_exit("Could not create $opt{target}") if ( !$opt{target} );
+
+set_debug( \&other_debug );
+
+if ( $opt{verbose} ) {
+    my $prog = get_program();
+    debug("prog is '$prog'");
+}
+
+my $count = 0;
+my $dlcount = 0 ;
+foreach my $name ( sort keys %iot_feeds ) {
+  my $source = $iot_feeds{$name} ;
+
+  my $dir = "$opt{target}/$name" ;
+
+    path($dir)->mkpath if ( $opt{fetch} );
+
+    my $feed = XML::FeedPP->new($source);
+    say "Title: " . $feed->title();
+    foreach my $item ( $feed->get_item() ) {
+        my $name = $item->title();
+        $name =~ s/^.*?:\s+(.*)/$1/ ;
+        $name =~ s/['"]//g;
+        $name =~ s/\s/_/g;
+        $name .= ".mp3" ;
+        $name = lc( $name) ;
+        my $filename = "$dir/$name" ;
+
+        my $title = $item->title() ;
+        $title =~ s/^.*?:\s+(.*)/$1/ ;
+
+        if ( $opt{fetch} && ! -f $filename) {
+
+            my $furl = Furl->new(
+                agent   => 'IOT fetcher',
+                timeout => 10,
+            );
+
+            my $res = $furl->get($item->link());
+            if( $res->is_success) {
+              path( "$filename")->spew_raw($res->content);
+            }
+        }
+        $dlcount++ if (-f $filename) ;
+        say "       " .  ( -f $filename ? 'Y ' : 'N ') . $title ;
+        $count++;
+    }
+}
+
+say "$count items ($dlcount)";

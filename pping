@@ -1,0 +1,31 @@
+#!/usr/bin/perl -w
+# parallel ping
+# (c) kevin Mulholland 2012, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# v0.1 moodfarm@cpan.org, initial work
+
+use 5.12.0 ;
+use strict ;
+use App::Basis ;
+use App::Basis::Tools::Ping ;
+use Data::Dumper qw( Dumper) ;
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+  help_text => "Perform multiple pings in parallel
+"
+  , help_cmdline => "$program [--help] [options] ip ip ip ip ...
+",
+  options => { 'verbose|v' => 'Dump extra useful information', }
+) ;
+
+my $res = parallel_ping( \@ARGV, 255 ) ;
+
+# print whatever was passed, ip address or hostname
+map { say sprintf( "%-15s\t%s", $_, $res->{$_} ? 'live' : '' ) } keys %$res ;
+print Dumper($res) if ( $opt{verbose} ) ;

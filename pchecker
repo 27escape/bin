@@ -1,0 +1,145 @@
+#!/usr/bin/perl -w
+# run a bunch of things in parallel and report via hypnocube
+# this app uses real unix forking, so effectively calls itself multiple times
+# moodfarm@cpan.org
+
+use 5.010;
+use strict ;
+use warnings ;
+use Fcntl ;
+use Data::Dumper qw(Dumper) ;
+$Data::Dumper::Terse = 1 ;
+use App::Basis qw( :delaydb :noinit) ;
+use File::Slurp qw(slurp) ;
+use Parallel::ForkManager ;
+
+# ----------------------------------------------------------------------------
+my $STATUS_MISSING  = 0 ;
+my $STATUS_BAD      = 1 ;
+my $STATUS_CRITICAL = 2 ;
+my $STATUS_WARNING  = 3 ;
+my $STATUS_GOOD     = 4 ;
+my $STATUS_ERROR    = 5 ;
+my $STATUS_LILAC    = 6 ;
+my $STATUS_CYAN     = 7 ;
+my $STATUS_WHITE    = 8 ;
+
+# ----------------------------------------------------------------------------
+
+my $MAX_FORKS = 8 ;
+my $MAX_TASKS = 64 ;      #0 ..63
+# my $MAX_TASKS = 8 ;      #0 ..63
+
+my $config = get_config() ;
+# set hypnocube either from config or default
+my $DEFAULT_FIFO = $config->{hypnocube}->{fifo} ? $config->{hypnocube}->{fifo} : '/tmp/hypnocube' ;
+my %task_data ;
+
+my %status = (
+  $STATUS_MISSING     => 'black'
+  , $STATUS_BAD       => 'red'
+  , $STATUS_CRITICAL  => 'orange'
+  , $STATUS_WARNING   => 'yellow'
+  , $STATUS_GOOD      => 'green'
+  , $STATUS_ERROR     => 'blue'
+  , $STATUS_LILAC     => 'lilac'
+  , $STATUS_CYAN      => 'cyan'
+  , $STATUS_WHITE     => 'white'
+) ;
+
+# my %commands = (
+#   'ping'      = \&cmd_ping
+#   , 'dns'     => \&cmd_dns
+#   , 'http'    => \&cmd_http
+#   , 'nagios'  => \&cmd_nagios
+#   , 'ssh'     => \&cmd_ssh
+#   , 'sftp'    => \&cmd_sftp
+#   , 'ftp'     => \&cmd_ftp
+#   , 'port'    => \&cmd_port
+#   , 'import'  => \&cmd_import
+# ) ;
+# 
+
+# ----------------------------------------------------------------------------
+# decide where in the hypnocube array a number goes
+sub pixel_pos {
+  my $number = shift ;
+  my ($x, $y, $z) ;
+
+  $x = $number & 3 ;
+  $z = ($number >> 2) & 3 ;
+  $y = $number >> 4 ;
+
+  return ($x, $y, $z) ;
+}
+
+# ----------------------------------------------------------------------------
+# main
+
+my %opt = init_app(
+  help_text       => 'Run many tests'
+#     , help_cmdline  => 'filename'
+  , options       =>  {
+      'file|f=s'    => 'source file of the tests'
+      , 'forks=i'   => 'Number of tests to run in parallel default:' . $MAX_FORKS
+    , 'verbose'     => 'tell us whats going on'
+  }
+) ;
+
+
+show_usage( "Missing testfile") if( ! $opt{file}) ;
+$opt{file} =~ s/^~/$ENV{HOME}/ ;
+show_usage( "Missing testfile ($opt{file})") if( ! -f $opt{file}) ;
+$MAX_FORKS = int( $opt{ forks}) if( $opt{ forks}) ;
+
+# do all the tasks in parallel
+
+my $pm = new Parallel::ForkManager( $MAX_FORKS);
+
+$pm->run_on_finish(
+  sub { 
+    my ($pid, $exit_code, $task_count) = @_;
+    $task_data{$task_count-1} = $exit_code & 7;
+  }
+);
+
+my @tasklist = slurp( $opt{file}) ;
+my $tasknum = 0 ;
+# foreach my $task ( @tasklist) {
+for( my $i = 0 ; $i <= ($MAX_TASKS + 5) ; $i++ ) {
+  my $task = "some name $i" ;
+  # remove comments
+  $task =~ s/#.*// ;
+  # and whitespace
+  $task =~ s/^\s+(.*?)\s+$/$1/ ;
+  continue if( !$task) ;
+
+  last if( ++$tasknum > $MAX_TASKS) ;
+
+  # until the loop end, everything from here is in the fork
+  $pm->start( $tasknum) and next;        # do the fork
+
+  # rename the child process
+  local $0 = get_program() . " task ($tasknum)" ;
+
+  # run the task here and decide on the state 
+  # state is 0..255
+#   my $state = int( rand(8)) ;
+  my $state = $tasknum -1 ;
+
+  $pm->finish( $state) ;
+}
+print STDERR "waiting for all children to finish ...\n" ;
+$pm->wait_all_children;
+
+my $hypno = 'clear ; sleep 0.2 ; ' ;
+# we sort as numbers so its easier to debug and no other reason
+foreach my $k ( sort {$a <=> $b} keys %task_data) {
+  my $v = $task_data{$k} ;
+#   say STDERR "$k (" . join( ',', pixel_pos( $k)) . ") $v - " . $status{$v} ;
+  # create the pixel and colour status
+  $hypno .= 'pixel ' . join( ',', pixel_pos( $k)) . ' ' . $status{$v} . ' ; ' ;
+}
+
+$hypno .= ' update ; sleep 0.2 ; repeat 3 ' ;
+say "$hypno" ;

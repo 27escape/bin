@@ -1,0 +1,73 @@
+#!/usr/bin/env perl
+# get some geo info
+#
+# (c) kevin Mulholland 2014, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# v0.1 moodfarm@cpan.org, initial work
+
+use 5.14.0;
+use strict;
+use warnings;
+use App::Basis;
+use Data::Printer;
+use YAML qw(Dump);
+#use Geo::Coder::OSM;
+use Geo::Coder::Google;
+
+# use feature 'unicode_strings';                  
+# use open qw(:std :utf8);                          
+# use utf8;
+use utf8::all ;
+
+sub other_debug {
+    my $debug = shift;
+    say localtime() . " app " . $debug;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text    => "Get geocoder information about an address with Google or Open Street Maps (OSM)",
+    help_cmdline => "the address (if not using latitude and longitude parameters)
+$program    buckingham palace london
+$program --latitude '51.50080205' --longitude='-0.143005006089659'
+",
+    options => {
+        'latitude=s' => {
+            desc     => 'Latitude',
+            # depends => 'longitude',
+        },
+        'longitude=s' => {
+            desc     => 'Longitude',
+            # depends => 'latitude',
+        },
+ #       'osm|o' => 'Use OSM rather than Google',
+        'verbose|v' => 'Verbose output',
+    }
+);
+
+show_usage( "Missing parameters") if ( !scalar(@ARGV) && ! ($opt{latitude} || !$opt{longitude}) );
+
+set_debug( \&other_debug );
+
+if ( $opt{verbose} ) {
+    my $prog = get_program();
+    debug("prog is '$prog'");
+}
+
+#my $geocoder = $opt{osm} ? Geo::Coder::OSM->new : Geo::Coder::Google->new(apiver => 3, language => 'en') ;
+my $geocoder = Geo::Coder::Google->new(apiver => 3, language => 'en') ;
+my $location;
+if ( $opt{latitude} ) {
+    $location = $geocoder->reverse_geocode( latlng => "$opt{latitude},$opt{longitude}" );
+}
+else {
+    my $address = join( ' ', @ARGV );
+    $location = $geocoder->geocode( location => $address );
+}
+
+say Dump($location);

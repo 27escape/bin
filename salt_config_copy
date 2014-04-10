@@ -1,0 +1,40 @@
+#!/bin/bash
+# copy this salt config and the salt_data to another master
+# moodfarm@cpan.org
+SALT_CFG=/etc/salt
+SALT_DATA=/srv
+# make us check the copy by default
+CHECK="-nv"
+
+if [ "$1" == "" ] ; then
+  echo "You need to pass the name/ip address of a the salt master you wish to copy your salt config to"
+  exit 1
+fi
+
+if [ "$1" != "" ] ; then
+  MASTER=$1
+fi
+
+if [ "$2" == "copy" ] ; then
+  # remove the check option
+  CHECK=""
+fi
+
+
+ping -c1 -w1 -q $MASTER >/dev/null 2>&1 
+if [ "$?" != "0" ] ; then
+  echo "Could not contact $MASTER. You need to pass a valid name/ip address"
+  exit 2
+fi
+
+# now backup the data, note that the minion data is specific to the host
+rsync $CHECK -a -e ssh --delete --exclude="salt/minion.d/*" $SALT_CFG root@$MASTER:/etc
+rsync $CHECK -a -e ssh --delete $SALT_DATA root@$MASTER:/
+
+if [ "$CHECK" != "" ] ; then
+  echo 
+  echo "This was a check operation, add copy to your command to copy the files"
+else 
+  # need to restart the master as the data has changed
+  ssh root@$MASTER "service salt-master restart"
+fi

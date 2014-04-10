@@ -1,0 +1,18 @@
+#!/bin/sh
+# convert all the dot files to png
+# moodfarm@cpan.org
+
+for dotfile in *dot
+do
+  fname=`basename $dotfile .dot`
+  pngfile=$fname.png
+  # test if the dotfile has changed
+  if [ ! -e $pngfile ] ; then
+    echo creating $fname
+    dot -Tpng -o$pngfile $dotfile
+  fi
+  if [ $dotfile -nt $pngfile ] ; then
+    echo updating $fname
+    dot -Tpng -o$pngfile $dotfile
+  fi
+done

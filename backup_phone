@@ -1,0 +1,71 @@
+#!/bin/bash
+# backup audio things to phone
+# moodfarm@cpan.org
+
+# if we assume laptop is master then we use
+## rsync -av --del -m --safe-links
+# if either can be master data source then we use
+## rsync -av --safe-links
+
+# if another backup is running then we should not startup
+# we will use a file in /tmp to use as a lock file, this should get cleaned up after bootups
+PROGRAM=`basename $0`
+LOCK_FILE="/tmp/$PROGRAM.lock"
+BACKUP_CMD='rsync -a --safe-links  -C '
+AUDIO='$HOME/Videos/*m4a'
+
+bar -v 2>/dev/null
+if [ "$?" != "1" ] ; then
+  echo "program 'bar' required    sudo apt-get install bar"
+  exit 1
+fi
+
+# find the backup drive
+for drive in /media/$USER/* 
+do
+  if [ -d $drive -a -d "$drive/Android" -a -d "$drive/Download" ] ; then
+    BACKUP_DRIVE=$drive/Download
+    echo "using phone drive $BACKUP_DRIVE"
+  fi
+done
+
+if [ -z "$BACKUP_DRIVE" ] ; then
+  echo "Could not find a phone drive"
+  exit
+fi
+
+# check the lock file
+if [ ! -f $LOCK_FILE ] ; then
+  # create the lock file
+  >> $LOCK_FILE
+
+  # backup to external USB drive WD Elements if it is present
+  if [ -d $BACKUP_DRIVE ] ; then
+    # move the audio files, don't copy them twice
+    fcount=`ls -1 $AUDIO 2>/dev/null|wc -l`
+    if [ $fcount != "0" ] ; then
+      if [ ! -d $BACKUP_DRIVE ] ; then
+        echo Created Download directory
+        mkdir -p $BACKUP_DRIVE
+      fi
+      echo "Moving $fcount audio files"
+      for src in $AUDIO
+      do
+        file=`basename $src`
+        dest=$BACKUP_DRIVE/$file
+        # bar can copy files as well as counting throughput between pipes
+        bar -bs 10m --title "copying $file" "$src" "$dest"
+        if [ "$?" == "0" -a -f "$dest" ] ; then
+          rm "$src"
+        fi
+      done
+    fi
+
+  fi
+
+  # and unlock for next go around
+  notify-send -a "backup" "Backup completed" "Phone stuff has been copied" -t 500
+  rm $LOCK_FILE
+else
+  echo "Cannot continue, app seems to be running, or there is a lock file left behind ($LOCK_FILE)"
+fi

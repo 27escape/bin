@@ -1,0 +1,151 @@
+#!/usr/bin/perl
+# note that not using the -w flag cos we need to switch some warnings off
+# clean up old files in a directory that the user has permissions to do so
+# moodfarm@cpan.org
+
+use 5.010;
+use strict ;
+use warnings ;
+use App::Basis qw( :delaydb) ;
+use File::Find::Rule ;
+use Date::Manip qw( UnixDate ParseDate) ;
+use POSIX qw(strftime) ;
+use Try::Tiny ;
+
+use constant HOUR => 3600 ;
+use constant DAY => 24 * HOUR ;
+
+my $CLEAN_TIME = 24 ;
+my $TMP = '/tmp' ;
+
+# -----------------------------------------------------------------------------
+# daemonise
+# create a daemon process, detach from the controlling tty
+# if called by root, we can specify a dir to chroot into to keep things safer
+#
+sub daemonise
+{
+  my $root = shift ;
+
+  if( $root) {
+    chroot( $root) or die "Could not chroot to $root, only the root user can do this." ;
+  }
+  # fork once and let the parent exit
+  my $pid = fork() ;
+  #      exit if $pid ;
+  # parent to return 0, as it is logical
+  if( $pid) {
+    return 0 ;
+  }
+  die "Couldn't fork: $!" unless defined $pid ;
+
+  # disassociate from controlling terminal, leave the
+  # process group behind
+
+  POSIX::setsid() or die "Can't start a new session" ;
+
+  # show that we have started a daemon process
+  return 1 ;
+}
+#
+
+# ----------------------------------------------------------------------------
+# clean old files and directories from given directory
+# NOTE there does not seem to be a simple way to prevent from attempting to recurse
+# into directories it does not have permission to, this throws up errors!
+sub clean_directory {
+  my ($tree, $mtime, $verbose, $test) = @_ ;
+
+  my $rule = File::Find::Rule->new() ;
+  $rule->extras( { bydepth => 1, no_chdir => 1}) ;
+#   $rule->mtime( "<$mtime") ;
+
+  my @results ;
+  {
+    # File::Find with warn if we cannot get into a directory
+    # lets not report this
+    no warnings ;
+    @results = $rule->in( $tree) ;
+  }
+
+  # we should only get items we can remove
+  foreach my $file ( @results) {
+    # we need write permission to delete, also make sure its still there
+    next if( ! -w $file || !-e $file) ;
+    if( -f $file) {
+      my @s = stat( $file) ;
+      # if file is too new do not delete
+      next if( $s[9] > $mtime) ;
+      say STDERR "clean file $file" if( $verbose) ;
+      unlink( $file) if( !$test) ;
+    } elsif( -d $file) {
+      next if( $file eq $tree || $file eq "$tree/.") ;   
+      # recurse and remove the dir afterwards
+      clean_directory( $file, $mtime, $verbose, $test) ;
+      # if we have write access in the parent then we may be able
+      # to delete this directory
+      if( -w "$file/..") {
+          say STDERR "clean dir  $file" if( $verbose) ;
+          rmdir( $file) ;
+      }
+    }
+  }
+}
+
+# ----------------------------------------------------------------------------
+# main
+my $config = get_config() ;
+
+my %opt = init_app(
+  help_text       => 'Clean a directory by deleting old files and empty directories'
+  , help_cmdline  => "directory_to_clean [default: $TMP]"
+  , options       =>  {
+    'age|a=s'     => "Files older than this many days will be cleaned [default: $CLEAN_TIME days],
+\t\tcan also use date strings '2012-03-24' or things like 'last thursday' or '3 weeks ago'"
+    , 'daemon|d'  => 'Run as a daemon'
+    , 'verbose|v' => 'Be verbose about deletions'
+    , 'test|t'    => 'Test, do not perform delete, sets verbose ON'
+  }
+) ;
+
+my $tree = $ARGV[0] || $TMP ;
+$tree =~ s|//|/|gsm ;
+$tree =~ s|/$|| ;
+
+msg_exit( 'For safety root user is not allowed', 1) if( getpwuid($>) eq 'root') ;
+show_usage( 'Invalid directory to clean') if( ! -d $tree) ;
+
+if( $opt{test}) {
+  $opt{verbose} = 1 ;
+  say STDERR "Test mode, files will not be deleted" ;
+}
+$opt{age} ||= $CLEAN_TIME ;
+
+# check if its just a number of days or a parsable date string
+if( $opt{age} =~ /^\d+$/) {
+  $opt{age} = time() - DAY * $opt{age} ;
+} else {
+  $opt{age} = UnixDate( ParseDate( $opt{age}), "%s") ;
+}
+# keep time in the present
+$opt{age} = time() if( $opt{age}> time()) ;
+say STDERR strftime( "cleaning from %Y-%m-%d %H:%M:%S", localtime( $opt{age})) if( $opt{verbose}) ;
+
+try {
+  # start the daemon process if needed
+  # parent should exit
+  exit( 0) if( $opt{daemon} && !daemonise()) ;
+
+  while( 1) {
+    clean_directory( $tree, $opt{age}, $opt{verbose}, $opt{test}) ;
+    # if not deamon mode quit out
+    last if( !$opt{daemon}) ;
+    sleep( HOUR) ;
+  }
+} catch {
+  msg_exit( 'Failed to create daemon process', 1) ;
+} ;
+
+
+
+

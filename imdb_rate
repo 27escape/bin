@@ -1,0 +1,117 @@
+#!/usr/bin/perl 
+# v0.1 find movie files and get their rating from IMDB
+# moodfarm@cpan.org
+
+use 5.012 ;
+
+use App::Basis qw( :config /home/kmulholland/tmp/kevins.conf) ;
+use Data::Dumper qw(Dumper) ;
+$Data::Dumper::Terse = 1 ;
+use File::Find::Rule ;
+use File::Basename ;
+use IMDB::Film ;
+# use Smart::Comments ;
+use Try::Tiny ;
+
+# ----------------------------------------------------------------------------
+
+my $VERSION = '0.1' ;
+my $DELIMITOR = '|' ;
+my $IMDB_CACHE = "/home/kmulholland/tmp/imdb.cache" ;
+my $TIMEOUT = 30 ;
+# ----------------------------------------------------------------------------
+#
+
+sub process_file {
+  my ( $file) = @_ ;
+  my %result ;
+
+  $result{title} = basename $file ;
+  $result{title} =~ s/\[.*?\]//g ;
+  $result{title} =~ s/\..*//g ;
+  $result{title} =~ s/\(.*?\)//g ;
+  $result{title} =~ s/_/ /g ;
+  $result{title} =~ s/\s+/ /g ;
+  $result{title} =~ s/\s$//g ;
+  $result{title} =~ s/^\s//g ;
+  $result{title} =~ s/dvix//i ;
+  $result{title} =~ s/xvid//i ;
+
+  $result{ext} = $file ;
+  $result{ext} =~ s/.*\.(\w{3,4})$/$1/ ;
+    
+  $result{source} = $file ;
+
+  try {
+    no warnings ;
+    # we only want to find one
+    my $imdb = new IMDB::Film( crit => $result{title}
+        , timeout       => $TIMEOUT
+        , cache         => 1
+        , cache_root    => $IMDB_CACHE
+        , cache_exp     => '1 w'
+        , search        => "find?s=tt&mx=1&q="
+    ) ;
+
+    if( scalar( @{$imdb->{matched}})) {
+      $result{rating} = $imdb->rating ;
+    }
+  } catch {
+      $result{errro} = $_ ;
+  } ;
+
+  return \%result ;
+}
+# ----------------------------------------------------------------------------
+# work on an entire tree
+sub process_directory {
+  my ($opt) = @_ ;
+  my $tlen = length( $opt->{source}) ;
+  my @fields = qw( title rating source ext) ;
+  my @errors ;
+  say STDERR "processing $opt->{source}" if( $opt->{verbose});
+
+  say join( $opt->{delimitor}, @fields) ;
+
+  my $rule = File::Find::Rule->file() ;  
+
+  ### finding files
+  my @files = $rule->in( $opt->{source}) ;
+  
+  foreach my $filename ( @files ) { ### Processing ===[%]
+    # only process interesting files
+    next if( $filename !~ /[avi|mov|mp4|m4v|wmv|mpg|flv|aac|divx]$/i) ;
+    
+    my $result = process_file( $filename) ;
+    if( !$result->{error}) {
+      $result->{source} = $filename ;
+#       say STDERR Dumper( $result) if( $opt{verbose});
+      say join( $opt->{delimitor}, ( map { $result->{$_} ? $result->{$_} : ""} @fields)) ;
+    } else {
+      push @errors, $result->{error} ;
+    }
+  }
+  if( @errors) {
+    say STDERR "Error Report\n" . join( "\n", @errors) ;
+  }
+}
+
+# ----------------------------------------------------------------------------
+# main
+my %opt = init_app(
+  help_text       => 'Import Sunfly data'
+  , options       =>  {
+    'delimitor|d=s' => "csv delimitor (default:$DELIMITOR)"
+    , 'source=s'    =>  'source directory'
+    , 'verbose'     => 'tell us whats going on'
+  }
+) ;
+$opt{delimitor} ||= $DELIMITOR ;
+
+if( -d $opt{source}) {
+  process_directory( \%opt) ;
+} else {
+  show_usage( 'Bad source direcory ' . $opt{source}) ;
+}
+
+

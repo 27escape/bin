@@ -1,0 +1,80 @@
+#!/usr/bin/perl -w
+# started out to test the ping_subnet function, now spun out as its own script
+# (c) kevin Mulholland 2012, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# v0.1 moodfarm@cpan.org, initial work
+
+use 5.12.0 ;
+use strict ;
+use App::Basis ;
+use App::Basis::Tools::Ping ;
+use Data::Dumper qw( Dumper) ;
+
+# ----------------------------------------------------------------------------
+# sort ips from a hashref of ip addresses
+sub sort_ips
+{
+  my $ips = shift ;
+
+  my @list = map { sprintf( "%-15s\t%s", $_, $ips->{$_} ? 'live' : '' ) } sort {
+    $a =~ /(\d+)\.(\d+)\.(\d+)\.(\d+)/ ;
+    my ( $a1, $a2, $a3, $a4 ) = ( $1, $2, $3, $4 ) ;
+    $b =~ /(\d+)\.(\d+)\.(\d+)\.(\d+)/ ;
+    my ( $b1, $b2, $b3, $b4 ) = ( $1, $2, $3, $4 ) ;
+    if ( $a1 != $b1 ) {
+      $a1 <=> $b1 ;
+    } elsif ( $a2 != $b2 ) {
+      $a2 <=> $b2 ;
+    } elsif ( $a3 != $b3 ) {
+      $a3 <=> $b3 ;
+    } else {
+      $a4 <=> $b4 ;
+    }
+  } keys %$ips ;
+
+  return \@list ;
+}
+
+# ----------------------------------------------------------------------------
+
+my %opt = init_app(
+  help_text => "test ping_subnet function
+"
+  , help_cmdline => "[ip address/subnet]
+  ip address is optional, subnet on eth0 will be used as default
+  ip address examples 192.168.1.0, 192.168.0.3/24
+",
+  options => {
+    'verbose|v' => 'Dump extra useful information',
+    'live'      => 'Show live IPs only',
+    'iface|i=s' => 'Network interface'
+  }
+) ;
+
+my $iface = $opt{iface} ? $opt{iface} : 'eth0' ;
+show_usage("$ARGV[0] does not look like an ip address") if ( $ARGV[0] && $ARGV[0] !~ m|^\d+\.\d+\.\d+\.\d+(/\d+)?$| ) ;
+my $ipaddr = $ARGV[0] || ip_for_iface($iface) ;
+show_usage( "Could not determine an ip address on interface $iface", 2 ) if ( !$ipaddr ) ;
+
+# if we just have an ip address
+if ( $ipaddr =~ /^\d+\.\d+\.\d+\.\d+$/ ) {
+
+  # add on the subnet
+  $ipaddr .= '/24' ;
+}
+
+say "ipaddr ($ipaddr)" ;
+my $res = ping_subnet( $ipaddr ) ;
+
+# print sorted ip addresses
+if ( $opt{live} ) {
+  my %live ;
+  map { $live{$_} = 1 if ( $res->{$_} ) ; } keys %$res ;
+  $res = \%live ;
+}
+
+my $ips = sort_ips($res) ;
+say join( "\n", @$ips ) ;
+
+say "dump " . Dumper($res) if ( $opt{verbose} ) ;

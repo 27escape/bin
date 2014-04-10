@@ -1,0 +1,156 @@
+#!/usr/bin/env perl
+# testing Sentry and log::Sentry
+
+# (c) kevin Mulholland 2014, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# extra info at http://sentry.readthedocs.org/en/latest/developer/client/index.html#client-usage-end-user
+
+# v0.1 moodfarm@cpan.org, initial work
+
+use 5.16.0;
+use strict;
+use warnings;
+use POSIX qw(strftime);
+use Data::Printer;
+use Log::Sentry;
+use App::Basis;
+
+# -----------------------------------------------------------------------------
+
+my @msg_levels = qw( fatal error warning info debug);
+
+# these are the various sentry servers with a platform ID number, that we can send
+# data to
+my %targets = (
+
+    # ideally these should be https not http to hide the sentry_secret_key
+    # for a service on public servers these MUST be https
+    infra => 'http://76b8ad7536334ef6924465e4fd0f8aba:0335c4bc86774487871d90297d2ec810@localhost:9000/2',
+    live  => 'http://f434d328792d4e08878fe398b238a717:18abad60ef4c4f5d98726855a8154f25@localhost:9000/3',
+    sei   => 'http://bcabd0400a0c4545a0d77165cbd7e554:4420f0fd585a45c5b717d3e0069e3430@sei:9000/2',
+
+    # on getsentry.com
+    sentry => 'https://50cc7c0d7fd74a5f957d66a81580fbb3:f506d4b69e5a4fe5a0dbc4b505ce49c8@app.getsentry.com/20947',
+);
+
+# -----------------------------------------------------------------------------
+sub other_debug {
+    my ($debug) = @_;
+
+    say strftime( '%Y-%m-%d %H:%M:%S', gmtime( time() ) ) . " " . get_program() . " " . $debug;
+}
+
+# -----------------------------------------------------------------------------
+# create a Log::Sentry object from a passed URL
+sub sentry {
+    my ($url) = @_;
+    my ( $proto, $public, $secret, $host, $project ) = ( $url =~ m|(https?)://(.*?):(.*?)@(.*?)/(\d+)| );
+
+    # if ( !$proto ) {
+    #     say STDERR "attempting without secret key";
+
+    #     ( $proto, $public, $host, $project ) = ( $url =~ m|(https?)://(.*?)@(.*?)/(\d+)| );
+    # }
+    if ( !$proto ) {
+        die "Could not parse Sentry URL";
+    }
+
+    my %details = (
+        sentry_public_key => $public,
+        sentry_secret_key => $secret,
+        remote_url        => "$proto://$host/api/$project/store/"
+    );
+
+    # say "details " . p(%details);
+
+    my $sentry = Log::Sentry->new(%details);
+
+    return $sentry;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text    => "testing log::sentry",
+    help_cmdline => "message to log",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'tags|t=s'  => { desc => 'list of comma separated tags to associate with the message', },
+        'level|l=s' => {
+            desc     => 'Message level one of ' . join( ', ', @msg_levels ),
+            validate => sub {
+                my $val = shift;
+                return grep( /$val/, @msg_levels );
+            },
+            default => 'log'
+        },
+        'logger=s' => {
+            desc    => 'The name of the logger to report',
+            default => get_program()
+        },
+        'server=s' => {
+            desc => 'The name of the server to report',
+
+            #     default => hostname()
+        },
+        'platform=s' => 'Name of the platform that caused the issue',
+        'culprit=s' => 'What component caused the issue',
+        'target=s' => {
+            desc     => 'target to send messages to ' . join( ', ', keys %targets ),
+            validate => sub {
+                my $val = lc(shift);
+                return $targets{$val};
+            },
+            default => 'infra'
+        }
+    }
+);
+
+my $msg = join( ' ', @ARGV );
+show_usage('Missing message') if ( !$msg );
+
+set_debug( \&other_debug );
+
+if ( $opt{verbose} ) {
+    debug("Started");
+}
+
+my $tags = $opt{tags} ? [ split( /\?,\s?/, $opt{tags} ) ] : undef;
+
+my $sentry = sentry( $targets{ $opt{target} } );
+
+# extra params we can pass
+# platform    => "Platform name",                          # default 'perl',
+# culprit     => "Module or/and function raised error",    # default ""
+# server_name => "Server name where error occured",        # current host name is default
+# modules     => "list of relevant modules",
+# extra       => "extra params described below"
+
+my $status = $sentry->message(
+    {   message     => $msg,
+        platform    => $opt{platform},
+        culprit     => $opt{culprit},
+        logger      => $opt{logger},
+        level       => $opt{level},
+        server_name => $opt{server},
+        tags        => $tags,
+    }
+);
+
+if ( $opt{verbose} ) {
+    print $status->is_success ? "succcess" : "failed";
+
+    say " " . $status->status_line;    # code + message
+}
+
+# say "message " .p($status->message) ;
+# say "code " .$status->code ;
+# say "status was " . p($status);
+if ( $status->code != 200 ) {
+    say STDERR $status->status_line;
+}
+exit $status->code == 200 ? 0 : 1;

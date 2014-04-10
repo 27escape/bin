@@ -1,0 +1,185 @@
+#!/bin/bash
+# install salt-minion or salt-master on debian or ubuntu servers
+# (c) 2013 kevin mulholland, moodfarm@cpan.org
+
+TYPE=$1
+
+# -----------------------------------------------------------------------------
+function show_usage {
+    echo "
+Install salt onto a linux system, either as a master or a minion
+
+Install a master
+  $0 master
+
+Install a minion
+  $0 minion
+
+"
+    exit ;
+}
+
+# -----------------------------------------------------------------------------
+function check_ping_master {
+    ping -w1 -c1 salt >/dev/null 2>/dev/null
+    if [ "$?" == "0" ] ; then
+        echo "Can connect to the salt-master (salt)"
+    else 
+        echo "Cannot connect to the salt-master, you may need to either fix resolv.conf
+for your local domain - assuming you have created a server called salt and its in DNS/hosts, or
+specify the name/ip address of the master in /etc/salt/minion
+"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+function backup_sources {
+    # backup the apt source file
+    if [ ! -f /etc/apt/sources.list.pre_salt ] ; then
+        cp /etc/apt/sources.list /etc/apt/sources.list.pre_salt
+    fi    
+}
+
+# -----------------------------------------------------------------------------
+function check_salt_started {
+    ps ax|grep -v grep|grep -q "$TARGET"
+    if [ "$?" == "0" ] ; then
+        echo "$TARGET has started"
+    else
+        /etc/init.d/$TARGET start
+        ps ax|grep -v grep|grep -q "$TARGET"
+        if [ "$?" == "0" ] ; then
+            echo "$TARGET has started"
+        else 
+            echo "Failed to start $TARGET"
+        fi
+    fi
+}
+
+# -----------------------------------------------------------------------------
+function check_salt_installed {
+    INSTALLED=0
+    ps ax|grep -v grep|grep -q $TARGET 
+    if [ "$?" == "0" ] ; then
+        echo "$TARGET is running"
+        INSTALLED=1
+    else 
+        # find out if the package is installed
+        `dpkg --list | grep -q "$TARGET" | grep -q -E '^ii'`
+        if [ "$?" == "0" ] ; then
+            echo "$TARGET installed but not running"
+            INSTALLED=1
+        else
+            ps ax|grep -v grep|grep -q $ALTERNATE
+            if [ "$?" == "0" ] ; then
+                echo "$ALTERNATE is running, rather than $TARGET"
+                exit 3 ;
+            fi
+
+        fi
+    fi
+}
+
+# -----------------------------------------------------------------------------
+
+if [ "$TYPE" == '-help' ] ; then
+    show_usage
+fi
+
+if [ "$TYPE" != 'minion' -a "$TYPE" != 'master' ] ; then
+    echo "    Error: Unknown install type '$TYPE'"
+    show_usage
+fi
+
+# decide on what package needs to be installed
+TARGET="salt-$TYPE"
+ALTERNATE='salt-master'
+if [ $TARGET == 'salt-master' ] ; then
+    ALTERNATE='salt-minion'
+fi
+
+# check if we are the correct OS
+
+grep -qEi "debian|ubuntu" /etc/issue
+if [ "$?" != "0" ] ; then
+    echo "This installer is only for Ubuntu or debian systems"
+    exit 2 ;
+fi
+
+check_salt_installed
+if [ "$INSTALLED" == "1" ] ; then
+    exit
+fi
+
+backup_sources
+
+## debian 6
+
+grep -q 'Debian GNU/Linux 6' /etc/issue
+if [ "$?" == "0" ] ; then
+    echo "Installing Salt on Debian 6 (Squeeze)"
+    
+    grep -q -E '^deb http://debian.saltstack.com/debian squeeze-saltstack main' /etc/apt/sources.list
+    if [ "$?" != "0" ] ; then
+        echo "# salt
+deb http://debian.saltstack.com/debian squeeze-saltstack main
+deb http://backports.debian.org/debian-backports squeeze-backports main contrib non-free
+" >> /etc/apt/sources.list
+    fi
+    # make sure we have the package key
+    wget -q -O- "http://debian.saltstack.com/debian-salt-team-joehealy.gpg.key" | apt-key add -
+
+else
+    ## debian 7
+
+    grep -q 'Debian GNU/Linux 7' /etc/issue
+    if [ "$?" == "0" ] ; then
+        echo "Installing Salt on Debian 7 (Wheezy)"
+    
+        grep -q -E '^deb http://debian.saltstack.com/debian wheezy-saltstack main' /etc/apt/sources.list
+        if [ "$?" == "1" ] ; then
+            echo "# salt
+deb http://debian.saltstack.com/debian wheezy-saltstack main
+" >> /etc/apt/sources.list
+        fi
+        # make sure we have the package key
+        wget -q -O- "http://debian.saltstack.com/debian-salt-team-joehealy.gpg.key" | apt-key add -
+    else
+        ## Debian SID
+
+        grep -q 'Debian GNU/Linux jessie/sid' /etc/issue
+        if [ "$?" == "0" ] ; then
+            echo "Installing Salt on Debian 7 (Wheezy)"
+    
+            grep -q -E '^deb http://debian.saltstack.com/debian unstable main' /etc/apt/sources.list
+            if [ "$?" == "1" ] ; then
+                echo "# salt
+deb http://debian.saltstack.com/debian unstable main
+" >> /etc/apt/sources.list
+            fi
+            # make sure we have the package key
+            wget -q -O- "http://debian.saltstack.com/debian-salt-team-joehealy.gpg.key" | apt-key add -
+        else
+        ## ubuntu 10
+
+            grep -q 'Ubuntu 1' /etc/issue
+            if [ "$?" == "0" ] ; then
+            echo "Installing Salt on Ubuntu"
+        
+            apt-get -y install python-software-properties
+            add-apt-repository -y ppa:saltstack/salt
+            else 
+                echo "Sorry this installer only works on Ubuntu >= 10.04"
+                exit 1 ;
+            fi
+        fi
+    fi
+fi    
+
+# now do the install
+
+apt-get update
+apt-get -y install $TARGET
+    
+check_salt_installed
+check_salt_started

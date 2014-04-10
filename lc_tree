@@ -1,0 +1,180 @@
+#!/usr/bin/perl -w
+# v0.1 lower case all directory and filenames in a directory tree
+# v0.2 changed to do upper or lower and regexp replaces
+# moodfarm@cpan.org
+
+use 5.010 ;
+
+use File::Basename ;
+use Getopt::Long qw( GetOptions) ;
+use Data::Dumper qw(Dumper) ;
+$Data::Dumper::Terse = 1 ;
+
+# we use this to allow long and short command line options
+# also unknown options passed though rather than being dumped to stdout
+Getopt::Long::Configure( "bundling", "pass_through" ) ;
+use File::Find::Rule ;
+use File::Copy ;
+
+# ----------------------------------------------------------------------------
+
+my $PROGRAM = basename $0 ;
+my $VERSION = '0.2' ;
+my $ctrl_c  = 0 ;
+
+# ----------------------------------------------------------------------------
+# tidy_exit
+# perform any tidy ups required and exit with any passed value
+sub tidy_exit
+{
+  my $val = shift ;
+
+  # and quit
+  exit $val ;
+}
+
+# ----------------------------------------------------------------------------
+# show_usage
+# show how this program is used
+# any error msg goes to STDERR
+sub show_usage
+{
+  my ( $msg, $state ) = @_ ;
+
+  my $help = qq{
+    Syntax: $PROGRAM [options] tree
+        lower case all files and directories in a directory tree
+
+    [options]
+        --verbose           print out stuff its doing
+        --lower             convert name to lower case
+        --upper             convert name to upper case
+        --regexp=/from/to/  convert using a regexp , applies to tail end files and directories
+
+} ;
+  if ($msg) {
+
+    # if we have an error message it MUST go to STDERR
+    # to make sure that any program the output is piped to
+    # does not get the message to process
+    print STDERR "$help\nError: $msg\n\n" ;
+  } else {
+    print $help ;
+  }
+
+  tidy_exit( defined $state ? $state : 1 ) ;
+}
+
+# ----------------------------------------------------------------------------
+sub msg_exit
+{
+  my ( $msg, $state ) = @_ ;
+
+  print "$msg\n" if ($msg) ;
+  tidy_exit($state) ;
+}
+
+# ----------------------------------------------------------------------------
+# handle the ctrl-c presses
+sub ctrl_c_handler
+{
+
+  # exit if we are already in ctrlC
+  tidy_exit(2) if ($ctrl_c) ;
+  $ctrl_c++ ;
+  say "\nCaught Ctrl-C. press again to exit immediately" ;
+
+  # re-init the handler
+  $SIG{'INT'} = \&ctrl_c_handler ;
+}
+
+# ----------------------------------------------------------------------------
+# work on an entire tree
+sub process_directory
+{
+  my ( $tree, $opt ) = @_ ;
+
+  my $rule = File::Find::Rule->directory()->extras( { follow => 1 } ) ;
+
+  # get all directories rename the directory the the files
+  foreach my $dir ( sort $rule->in($tree) ) {
+
+    # as the parent should by now be lower case, we need to redo the dir
+    # we are processing
+    my $parent = lc( dirname $dir) ;
+    my $child  = basename $dir ;
+    my $newdir = $parent . '/' . $child ;
+
+    # say "child is $child ($dir, $parent)" ;
+    if ( $child =~ /[A-Z]/ ) {
+      my $msg = 'ok' ;
+      my $status = move( $newdir, lc $newdir ) ;
+      if ( !$status ) {
+
+        # sometimes its not truthful about what its done
+        if ( !-d $newdir && -d ( lc $newdir ) ) {
+          $status = 1 ;
+        } else {
+          $msg = 'failed' ;
+          $msg .= ', could not move dir' if ( -d $newdir ) ;
+          $msg .= ', dir already exists' if ( -d ( lc $newdir ) ) ;
+        }
+      }
+      say( "moving dir $dir to " . lc $newdir . " $msg" ) if ( $opt{verbose} || !$status ) ;
+    }
+
+    # make sure everything now lower case
+    $newdir = lc($newdir) ;
+
+    # now rename all the files in this dir
+    if ( opendir( my $dh, $newdir ) ) {
+      foreach my $file ( readdir($dh) ) {
+
+        # only move files with upper case names
+        next if ( $file !~ /[A-Z]/ ) ;
+
+        # add in the directory for the move
+        $file = $newdir . '/' . $file ;
+        my $status = move( $file, lc $file ) ;
+        say( "moving file $file to " . lc $file . " " . ( $status ? 'ok' : 'failed' ) ) if ( $opt{verbose} || !$status ) ;
+      }
+      closedir($dh) ;
+    } else {
+      say "Failed to process dir $newdir" ;
+    }
+  }
+
+}
+
+# ----------------------------------------------------------------------------
+# just do a single file, just the bit at the end of the filepath
+sub process_file
+{
+  my ( $filename, $opt ) = @_ ;
+}
+
+# ----------------------------------------------------------------------------
+# main
+my %opt = () ;
+
+# check command line args
+GetOptions( \%opt, 'help|h|?', 'verbose|v', 'lower|l', 'upper|u', 'regexp|r=s' ) ;
+show_usage() if ( $opt{help} ) ;
+
+show_usage('Options mutually exclusive') if ( $opt{lower} && opt {upper} ) ;
+
+my $tree = $ARGV[0] ;
+
+# catch control-c
+$SIG{'INT'} = \&ctrl_c_handler ;
+
+if ( -f $tree ) {
+  process_file( $tree, \%opt ) ;
+} elsif ( -d $tree ) {
+  process_directory( $tree, \%opt ) ;
+} else {
+  show_usage( 'Unknown filetype for ' . $tree ) ;
+}
+
+# and do tidy ups etc.
+msg_exit( '', 0 ) ;

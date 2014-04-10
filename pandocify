@@ -1,0 +1,83 @@
+#!/usr/bin/env perl 
+# convert mindmap files into markdown and then
+# convert markdown files into libreoffice and HMTL versions using pandoc
+# (c) author moodfarm@cpan.org
+# license: same as perl
+# date 2013-01-22
+
+use 5.14.0;
+use strict;
+use warnings;
+
+use When::Happens;
+use When::Happens::FileNotify;
+
+# -----------------------------------------------------------------------------
+# This is called when files are changed in our watched dir
+
+sub convert_markdown {
+    my $changed = shift;
+    foreach my $o (@$changed) {
+        # we can only process files
+        next if( !-f $o->path()) ;
+        next if ( $o->type() !~ /modify|create/ );
+        # we don't want to process deletes etc
+        my $filename = $o->path();
+
+        my $newfile = $filename;
+        # make sure we have a new name
+        $newfile =~ s/\.md$/.odt/i;
+        # convert to openoffice
+        # run "pandoc -o '$newfile' --reference-odt=reference.odt '$filename'";
+        run "pandoc -o '$newfile' '$filename'";
+        # and to html5 standalone
+        $newfile =~ s/\.odt$/.html/i;
+        run "pandoc -o '$newfile' -w html5 -s '$filename'";
+        say "converted '$filename' with pandoc to openoffice and html";
+    }
+}
+
+# -----------------------------------------------------------------------------
+sub convert_mindmap {
+    my $changed = shift;
+    foreach my $o (@$changed) {
+        # we can only process files
+        next if( !-f $o->path()) ;
+        # we don't want to process deletes etc
+        next if ( $o->type() !~ /modify|create/ );
+
+        my $filename = $o->path();
+
+        my $newfile = $filename;
+        # make sure we have a new name
+        $newfile =~ s/\.md$/.odt/i;
+        run "mm2md --filename='$newfile'";
+        say "converted '$filename' from a mindmap";
+    }
+}
+# -----------------------------------------------------------------------------
+
+my %opt = init_happens(
+    help_text => 'Convert mindmap and markdown files to openoffice and HTML on directory file changes. Only files ending in .md or .mm will converted.',
+    options   => {
+        "dir|d=s" => {
+            desc     => 'directory to monitor for file changes',
+            required => 1
+        },
+        "daemon" => 'Run in the background as a daemon'
+    },
+);
+
+# start happens stuff and do command line
+init_happens(%opt);
+
+$opt{dir} =~ s/^~/$ENV{HOME}/ ;
+
+# setup our dir watcher for markdownfiles
+filenotify { id => 'markdown', dir => $opt{dir}, filter => qr/.md$/i } => \&convert_markdown;
+
+# setup our dir watcher for mindmaps
+filenotify { id => 'mindmap', dir => $opt{dir}, filter => qr/.mm$/i } => \&convert_mindmap;
+
+# wait for stuff to happen
+happens;

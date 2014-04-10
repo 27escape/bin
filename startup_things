@@ -1,0 +1,19 @@
+#!/bin/bash
+# run these things sometime after I login
+# moodfarm@cpan.org
+
+# hypnocube things
+cubepipe --daemon
+hypnoweb
+
+# give us sometime to start the daemon
+sleep 5
+nohup cheerlights >/dev/null &
+
+# give the X-desktop time to startup before doing anything else
+sleep 60
+
+# mount the inview shares
+xterm -geometry 80x15 -e mnt_inview
+
+

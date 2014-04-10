@@ -1,0 +1,174 @@
+#!/usr/bin/env perl
+# record simple things
+#
+# (c) kevin Mulholland 2013, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# v0.1 moodfarm@cpan.org, initial work
+
+use 5.16.0;
+use strict;
+use warnings;
+use App::Basis;
+use Data::Printer;
+use Try::Tiny;
+use POSIX qw(strftime);
+use Date::Manip ;
+# this is our db schema and stuff
+use Record::Schema;
+
+# -----------------------------------------------------------------------------
+
+my $DEFAULT_DB   = '~/git/data/general_db.sqlite3';
+my $RECORD_TABLE = 'Record';
+my $TAGS_TABLE   = 'Tag';
+
+my $debug_lvl = 0;
+
+# -----------------------------------------------------------------------------
+
+sub other_debug {
+    my $debug = shift;
+    say localtime() . " " . get_program() . " " . $debug if ($debug_lvl);
+}
+
+# -----------------------------------------------------------------------------
+
+sub create_table_if_not_exists {
+    my ( $schema, $table ) = @_;
+
+    # check if we have data in the table, an exception will mean no table hopefully
+    try {
+        # attempt to read a single result from the table
+        my $rs = $schema->resultset($table)->search( {}, { rows => 1 } )->single();
+    }
+    catch {
+        # create the table from our schema as we think it does not exist
+        $schema->deploy;
+    };
+}
+
+# -----------------------------------------------------------------------------
+
+sub record_data {
+    my ( $schema, $table, $data ) = @_;
+
+    # get the date as a
+    my $date = new Date::Manip::Date;
+    $date->parse( $data->{date} );
+    my $day;
+    {
+        # if we get a warning about converting the date to a day, there
+        # must be a problem with parsing the input date string
+        local $SIG{__WARN__} = sub {
+            die "Invalid date";
+        };
+        $day = $date->printf("%a");
+    }
+    my $d = $date->printf("%Y-%m-%d");
+    my $t = $date->printf("%T");
+
+    my $new_record = $schema->resultset($table)->create(
+        {
+            datetime => "$d $t",
+            date  => $d,
+            time  => $t,
+            day   => $day,
+            item  => $data->{thing},
+            value => $data->{value}
+        }
+    );
+    my $status = $new_record->update;
+    if ( $data->{$TAGS_TABLE} ) {
+        my %tags;
+        foreach my $t ( split( /,/, $data->{$TAGS_TABLE} ) ) {
+            my ( $k, $v ) = ( $t =~ m/^(\w+)\s?=(.*?)\s?$/ );
+            $tags{$k} = $v if ( $k && $v );
+        }
+        if (%tags) {
+            my @tag_list ;
+            # as we are adding multiple things we can use populate rather than
+            # ->create
+            while ( my ( $key, $value ) = each %tags ) {
+                push @tag_list, [$new_record->id, $key, $value] ;
+            }
+            $schema->populate( $TAGS_TABLE, [[qw/record_id tag_name tag_value/], @tag_list]) ;
+        }
+    }
+    return $status;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text => "Record simple things against a datetime, don't add quantifiers to
+the things you are recording
+
+$program weight 75
+$program weight 75kg  # this would be bad, if you ever needed to calculate weight lost
+$program --date='2013-05-01 17:30' cycled 100
+$program cycled 100 --tag='time=45:00,speed=15'",
+    help_cmdline => "name_of_thing value_of_thing",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'db=s'      => {
+            desc    => 'SQLite DB to use',
+            default => $DEFAULT_DB,
+        },
+        'date|d=s' => {
+            default => strftime( "%Y-%m-%d %H:%M:%S", localtime( time() ) ),
+            desc    => 'date to record',
+            # validate => sub { my $val = shift ; return $val eq 'item'}
+        },
+        'tag|t=s' => {
+            desc     => 'tag this thing with a list of key/value pairs',
+            default  => " ",
+            validate => sub { my $t = shift; $t =~ s/^ $//; return !$t || $t =~ /.*?=.*?,?/; }
+        },
+        'debug=i' => { desc => 'level of debugging required', default => 0 },
+    }
+);
+
+$debug_lvl = $opt{debug};
+set_debug( \&other_debug );
+
+if ( $opt{verbose} ) {
+    my $prog = get_program();
+    debug("prog is '$prog'");
+}
+
+my ( $thing, $value ) = @ARGV;
+show_usage("Missing thing to record") if ( !$thing );
+# we can cope without a value
+$value //= '';
+
+$opt{db} =~ s/^~/$ENV{HOME}/;
+
+my $schema = Record::Schema->connect("DBI:SQLite:$opt{db}");
+
+show_usage("Invalid DB file") if ( !$schema );
+
+# check if there is the correct table and create if needed
+create_table_if_not_exists( $schema, $RECORD_TABLE );
+create_table_if_not_exists( $schema, $TAGS_TABLE );
+
+try {
+    if ( !record_data( $schema, $RECORD_TABLE, { date => $opt{date}, thing => $thing, value => $value, $TAGS_TABLE => $opt{tag} } ) ) {
+        die "failed to record data";
+    }
+    say "data record" if ( $opt{verbose} );
+
+    my $rs = $schema->resultset($RECORD_TABLE)->search( { item => $thing } );
+    say "There are now " . $rs->count . " $thing records";
+
+}
+catch {
+    # log the actual issue for the developer
+    debug($_);
+    # remove the at line thing for user data
+    s/at .*? line.*//;
+    say "Error $_";
+};

@@ -1,0 +1,61 @@
+#!/bin/sh
+# update my iplayer db tables
+# moodfarm@cpan.org
+
+date >> /tmp/get_iplayer_update.log
+# we know we have some scripts 
+PATH=$PATH:$HOME/bin
+
+# update iplayer
+export SQLFILE="$HOME/.get_iplayer/iplayer.sqlite3"
+export IPLAYER="$HOME/.get_iplayer/tv.cache"
+export HISTORY=/tmp/history.$$.csv
+
+# update the podcast db
+get_iplayer --type=podcast 1>&2 > /dev/null
+txt2db -c --delimitor='|' podcast,$HOME/.get_iplayer/podcast.cache |sqlite3 $SQLFILE
+
+# update the radio db
+get_iplayer --type=radio 1>&2 > /dev/null
+txt2db -c --delimitor='|' radio,$HOME/.get_iplayer/radio.cache |sqlite3 $SQLFILE
+
+# now do the TV
+get_iplayer 1>&2 > /dev/null
+# update the db
+txt2db -c --delimitor='|' tv,$IPLAYER |sqlite3 $SQLFILE
+
+echo "pid|name|short_desc|type|added|quality|stored_to|default_field|duration|desc|channel|categories|thumbnail|adult|url|episode" >$HISTORY
+cat $HOME/.get_iplayer/download_history >>$HISTORY
+
+# update the with the history
+txt2db -c --delimitor='|' downloads,$HISTORY |sqlite3 $SQLFILE
+
+# create the name views
+sqlite3 $SQLFILE "CREATE VIEW IF NOT EXISTS download_names AS
+    SELECT pid, CASE
+    WHEN 
+        (instr( name, ':')) != 0 THEN substr( name, 0, instr( name, ':'))
+    ELSE 
+        name
+    END AS 'name' from downloads ;"
+
+
+sqlite3 $SQLFILE "CREATE VIEW IF NOT EXISTS tv_names AS
+    SELECT tv._index, pid, CASE
+    WHEN 
+        (instr( name, ':')) != 0 THEN substr( name, 0, instr( name, ':'))
+    ELSE 
+        name
+    END AS 'name' from tv ;"
+
+# and the view of things to record
+sqlite3 $SQLFILE "CREATE VIEW IF NOT EXISTS record_list AS
+    SELECT t._index,t.name,t.pid from tv_names as t, download_names as d
+    WHERE 
+        t.name = d.name 
+    and 
+        t.pid NOT IN (SELECT pid from download_names);"
+
+# update the DBIx::Class schema
+cd ~/src/lib
+dbicdump Iplayer::Schema dbi:SQLite:$SQLFILE 2>/dev/null

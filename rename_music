@@ -1,0 +1,167 @@
+#!/usr/bin/perl -w
+# rename some files
+# moodfarm@cpan.org
+
+use 5.010;
+use strict ;
+use warnings ;
+use Data::Dumper qw(Dumper) ;
+$Data::Dumper::Terse = 1 ;
+use App::Basis qw( :delaydb) ;
+use File::Find::Rule ;
+use File::Temp qw( tempfile) ;
+# use Capture::Tiny ;
+use Log::Log4perl::Level;
+
+my $SRC = "/home/kmulholland/Music/source" ;
+my $DEST = "/home/kmulholland/Music/Kerri" ;
+my $BITRATE = 128 ;
+
+# -----------------------------------------------------------------------------
+# create all directories in a directory path
+sub mkdirhier {
+  my $dir_path = shift ;
+
+  my @dirs = split( "/", $dir_path) ;
+  my $path = "" ;
+
+  # check for path starting at root
+  if ($dir_path =~ /^\//) {
+    $path = '/' ;           # start from root
+    shift( @dirs) ;   # dump an empty entry
+  }
+
+  my $mask = umask( 0000) ;
+  # now check for all paths to the target dir_path
+  foreach my $d ( @dirs) {
+    $path .= $d . '/' ;
+#     mkdir( $path, 0777) unless -e $path ;
+    mkdir( $path) unless -e $path ;
+  }
+  umask( $mask) ;
+}
+
+
+# ----------------------------------------------------------------------------
+# run_cmd
+# run a shell command, return array of the return value and any stdout output
+#
+sub run_cmd {
+  my ( $cmd ) = @_;
+
+  my ( $fh, $filename ) = tempfile( UNLINK => 1 );
+  my $stderr = "2>$filename";
+
+  # set slurp mode while we are in this subroutine
+  local $/ = undef;
+
+  # use our path and not the system one so that it can pass taint checks
+  local $ENV{PATH} = "/bin:/usr/bin:" ;
+  my $full_cmd = "$cmd $stderr" ;
+  debug( "run_cmd: $cmd", $DEBUG) ;
+
+  # run the cmd catching stdout and stderr
+  open( my $CMD, '-|', $full_cmd ) || return ( 1, "Failed to run $cmd" );
+
+  # get the stdput from the cmd
+  my $stdout = <$CMD>;
+  close( $CMD);
+
+  # the return code is stored in the top byte
+  my $retcode = $?;
+
+  if ( -f $filename ) {
+      # read in anything that was written to stderr - via $filename
+      open( my $FH, '<', $filename );
+      $stderr = <$FH>;
+      close( $FH);
+  }
+
+  return ( $retcode, $stdout, $stderr );
+}
+
+# ----------------------------------------------------------------------------
+# clean old files and directories from given directory
+sub m4a_to_mp3 {
+  my $params = shift ;
+  my $cmd ;
+
+  my $rule = File::Find::Rule->new() ;
+#   $rule->extras( { bydepth => 1, no_chdir => 1}) ;
+  $rule->readable ;
+  $rule->writable ;
+  $rule->name( "*.m4a") ;
+  my $support = get_support() ;
+
+  foreach my $file ( $rule->in( $params->{source})) {
+    my $f = $file ;
+    $f =~ s|^$params->{source}/|| ;
+    $f =~ s/_/ /g ;
+    $f =~ s/-//g ;
+    $f =~ m|^(.*?)/(.*?)/(\d+)  (.*?)\.m4a$| ;
+    my ($artist, $album, $track, $title) = ($1, $2, $3, $4) ;
+    $title =~ s/[\s|_]?$// ;
+    $title =~ s/\s/_/g ;
+    $title =~ s/_{2,}/_/g ;
+
+    my $tmp = "/tmp/" . get_program() . "/$artist/$album/" ;
+    $tmp =~ s/\s/_/g ;
+    $tmp =~ s/_{2,}/_/g ;
+    mkdirhier( $tmp) ;
+    $tmp .= "$track" . "_$title.wav" ;
+
+    my $destination = "$params->{destination}/$artist/$album/" ;
+    $destination =~ s/\s/_/g ;
+    $destination =~ s/_{2,}/_/g ;
+    mkdirhier( $destination) ;
+    $destination .= "$track" . "_$title.mp3" ;
+
+    $track =~ s/_+/ /g ;
+    my $quiet = ($params->{verbose} ? "" : "--quiet") ;
+    # if we have not done the file previously, do it now
+    if( ! -s $destination) {
+      print "$artist:$album:$track:$title, " if( $params->{verbose}) ;
+# say "tmp $tmp" ;
+      if( ! -f $tmp) {
+        print "creating wav $tmp, " if( $params->{verbose}) ;
+        $cmd = "faad $quiet -o '$tmp' '$file'" ;
+#   say "wav_cmd $wav_cmd" ;
+        my ($ret, $out, $err) =  run_cmd( $cmd) ;
+#         system( "mplayer -ao pcm $file -ao pcm:file=$wav")
+      }
+      if( -s $tmp && ! -f $destination) {
+        print "creating mp3 $destination, " if( $params->{verbose}) ;
+        $cmd = "lame $quiet -h -b $BITRATE '$tmp' '$destination'" ;
+        system( $cmd) ;
+        if( $destination) {
+          print "tagging" if( $params->{verbose}) ;
+          $cmd = "mp3info -a '$artist' -n '$track' -l '$album' -t '$title' '$destination'" ;
+          my ($ret, $out, $err) =  run_cmd( $cmd) ;
+        }
+      }
+      print "\n" if( $params->{verbose}) ;
+    }
+  }
+}
+
+# ----------------------------------------------------------------------------
+# main
+my $config = get_config() ;
+
+my %opt = init_app(
+  help_text       => 'Rename my music files'
+#      , help_cmdline  => ""
+  , options       =>  {
+    'verbose|v'       => 'Be verbose'
+    , 'source|s'      => 'Source directory for music'
+    , 'destination|d' => 'Destination directory'
+  }
+) ;
+
+$opt{destination} ||= $DEST ;
+$opt{source} ||= $SRC ;
+say "" . Dumper( \%opt) ;
+show_usage( "Source is not a valid directory") if( ! -d $opt{source}) ;
+
+m4a_to_mp3( \%opt) ;
+ 

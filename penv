@@ -1,0 +1,8 @@
+#!/bin/sh
+# run a script using the local lib
+# moodfarm@cpan.org
+
+PERL5LIB=$PERL5LIB:./lib
+
+# run anything that was passed
+$*

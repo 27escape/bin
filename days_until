@@ -1,0 +1,30 @@
+#!/usr/bin/env perl
+# get days until a Date
+# moodfarm@cpan.org
+
+use 5.10.0;
+use strict;
+use warnings;
+use POSIX qw(ceil);
+use Date::Manip qw( UnixDate ParseDate);
+use App::Basis;
+use Time::Duration ;
+
+my $program = get_program();
+my %opt     = init_app(
+    help_text => "Get the number of days (or weeks) until a date",
+    options   => { 'concise|c' => { desc => "request a consise form", }, }
+);
+
+use constant DAY => 60 * 60 * 24;
+
+my $until = join( " ", @ARGV );
+
+my $secs_until = ( UnixDate( ParseDate($until), "%s" ) - time() ) ;
+
+if ( $opt{concise} ) {
+    say concise( duration($secs_until)) ;
+}
+else {
+    say duration( $secs_until) ;
+}

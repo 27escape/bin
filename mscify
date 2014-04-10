@@ -1,0 +1,19 @@
+#!/bin/sh
+# msc files are msg sequence charts, like graphviz, use mscgen to create
+# convert all the msc files to png
+# moodfarm@cpan.org
+
+for mscfile in *msc
+do
+  fname=`basename $mscfile .msc`
+  pngfile=$fname.png
+  # test if the mscfile has changed
+  if [ ! -e $pngfile ] ; then
+    echo creating $fname
+    mscgen -Tpng -o$pngfile $mscfile
+  fi
+  if [ $mscfile -nt $pngfile ] ; then
+    echo updating $fname
+    mscgen -Tpng -o$pngfile $mscfile
+  fi
+done

@@ -1,0 +1,81 @@
+#!/usr/bin/env perl
+# v0.1 2011-02-14  send sms msgs via aql
+# home/kmulholland
+
+use 5.014;
+
+use strict ;
+use warnings ;
+use Try::Tiny ;
+
+use App::Basis;
+use App::Basis::Config ;
+use SMS::AQL ;
+use File::Slurp ;
+use Data::Printer ;
+
+# ----------------------------------------------------------------------------
+
+my $VERSION = '0.2' ;
+my $ACCOUNTS = "/home/kmulholland/git/data/accounts.yaml" ;
+
+# ----------------------------------------------------------------------------
+# main
+my %opt = init_app(
+  help_text       => 'send SMS messages via AQL'
+  , help_cmdline  => 'Message to send'
+  , options       =>  {
+    'to|t=s'        => 'number to send to'
+    , 'as|a=s'      => { desc => 'number of name to send as', default => 'kevin'}
+    , 'voice|v'     => 'send as a voice message (UK numbers only)'
+    , 'credit|c'    => 'show remaining credit after msg is sent'
+    , 'file|f'      => 'csv file contain user names and numbers'
+    , 'match|m'     => 'regexp to match on when using file option'
+  }
+) ;
+
+my $msg = join( ' ', @ARGV) ;
+
+my $cfg = App::Basis::Config->new( filename => $ACCOUNTS ) ;
+
+# get account details from my common config
+my $user = $cfg->get('/accounts/aql/user') ;
+my $pass = $cfg->get('/accounts/aql/pass') ;
+
+# Create a sender
+my $sms = new SMS::AQL({ username => $user, password => $pass }) ;
+# if we only want credit
+if( $opt{credit} && (!$opt{to} || !$msg)) {
+  my $credit = $sms->credit() ;
+  msg_exit( "SMS remaining $credit", 0) ;
+}
+show_usage( 'Missing to number') if( !$opt{to}) ;
+show_usage( 'Missing to message') if( !$msg) ;
+
+
+# make nicely international if starting with +
+$opt{to} =~ s/^\+/00/ ;
+$opt{to} =~ s/\s//g ;       # remove spaces
+# converting to UK mobile number
+$opt{to} =~ s/^07/00447/ ;
+
+if( $opt{to} !~ /^00/) {
+  show_usage( 'International numbers must be used, ie 0044 for UK etc.') ;
+}
+
+my ($ok, $why) ;
+if( $opt{voice}) {
+  show_usage( 'We can only use UK numbers to send as a voice message.') if( $opt{to} !~ /^00447/) ;
+  $msg = 'This is an automated message from ' . $opt{as} . '. ' . $msg ;
+  ($ok, $why) = $sms->voice_push( $opt{to}, $msg, { skipintro => 1 }) ;
+} else {
+  ($ok, $why) = $sms->send_sms( $opt{to}, $msg, { sender => $opt{as} }) ;
+}
+if( !$ok) {
+  say 'failed to send msg: ' . ($why ? $why : 'unknown') ;
+}
+
+if( $opt{credit}) {
+  my $credit = $sms->credit() ;
+  say "SMS remaining $credit" ;
+}

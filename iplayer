@@ -1,0 +1,277 @@
+#!/usr/bin/env perl
+# wrapper around get_iplayer
+#
+# (c) kevin Mulholland 2012, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# v0.1 moodfarm@cpan.org, initial work
+
+use 5.16.0;
+use strict;
+use warnings;
+use Data::Dumper qw( Dumper);
+use POSIX qw(strftime);
+use Iplayer::Schema;
+use App::Basis;
+
+# -----------------------------------------------------------------------------
+use constant ONE_DAY        => 24 * 60 * 60;
+use constant IPLAYER_SQLITE => 'dbi:SQLite:/home/kmulholland/.get_iplayer/iplayer.sqlite3';
+use constant DB_UPDATE => 'get_iplayer_db' ;
+
+# -----------------------------------------------------------------------------
+
+my $DEFAULT_RECENT = 7;
+my $IPLAYER_CMD    = "$ENV{HOME}/bin/get_iplayer ";
+
+my @categories = qw( film science history travel food drama comedy music factual);
+
+# @categories = qw(drama) ;
+my $DEFAULT_CATEGORIES = join( ',', @categories );
+my %seen;
+
+# -----------------------------------------------------------------------------
+sub show_results {
+    my ($results) = @_;
+
+    return if ( !scalar(@$results) );
+
+    my $format = "%3s  %-30s   %-6s  %s";
+    say sprintf( $format, "ID", "Name", "Series", "Description" );
+
+    foreach my $res (@$results) {
+
+        # check if another search matched this item
+        next if ( $seen{ $res->_index } );
+
+        my $time = strftime( "%Y-%m-%d %H:%M:%S", localtime( $res->timeadded ) );
+        my $series = "";
+        if ( $res->seriesnum || $res->episodenum ) {
+            $series = $res->seriesnum . ":" . $res->episodenum;
+        }
+        my $desc = $res->desc;
+        my $name = $res->name;
+        $name =~ s/\:\s+Series.*//;
+        say sprintf( $format, $res->_index, $name, $series, $desc );
+
+        # mark this item as listed
+        $seen{ $res->_index } = $res;
+    }
+}
+
+# -----------------------------------------------------------------------------
+sub show_matches {
+    my ( $orm, $match, $recent, $kids ) = @_;
+
+    my $search_time = time() - ( $recent * ONE_DAY );
+
+    my $search = { timeadded => { '>=' => $search_time } };
+    if ( !$kids ) {
+        $search->{categories}->{not_like} = '%children%';
+        $search->{channel}->{not_like}    = 'CBeebies';
+    }
+
+    if ($match) {
+        $search->{'-or'} = {
+            name => { like => "%$match%" },
+            desc => { like => "%$match%" }
+        };
+    }
+
+    # say "search -> " . Dumper($search) ;
+
+    my $resultset = $orm->resultset('Tv')->search( $search, { order_by => ['name'] } );
+
+    # say "query " . Dumper($resultset->as_query) ;
+    if ( $resultset->count ) {
+        say "";
+        my @results = $resultset->all;
+        show_results( \@results );
+    }
+}
+
+# -----------------------------------------------------------------------------
+sub show_categories {
+    my ( $orm, $categories, $recent, $kids ) = @_;
+
+    my $search_time = time() - ( $recent * ONE_DAY );
+
+    foreach my $category (@$categories) {
+        my $search = {
+            timeadded  => { '>='   => $search_time },
+            categories => { 'like' => "%$category%" }
+        };
+
+        # we normall only want to allow childrens programs for films
+        if ( $category !~ /film/i ) {
+            $search->{categories}->{not_like} = '%children%';
+        }
+        else {
+            if ( !$kids ) {
+                $search->{categories}->{not_like} = '%children%';
+                $search->{channel}->{not_like}    = 'CBeebies';
+            }
+        }
+
+        my $resultset = $orm->resultset('Tv')->search( $search, { order_by => ['name'] } );
+        if ( $resultset->count ) {
+            say "";
+            my $pad = ( 80 - length($category) ) / 2;
+            say " " x $pad . ucfirst($category) . "\n" . "-" x 80;
+
+            my @results = $resultset->all;
+            show_results( \@results );
+        }
+    }
+}
+
+# check what we have recorded and suggest programs of the same name,
+# that we have not yet recorded
+sub suggest_recordings {
+    my ($orm) = @_;
+
+    # suggestion based on program name
+    my $suggest = <<EOD ;
+select DISTINCT tv._index, tv.pid, tv.name,tv.desc, tv.categories, tv.channel, tv.seriesnum,tv.episodenum from tv,downloads
+where 
+    tv.name = downloads.name 
+AND
+    downloads.pid NOT IN ( select pid from tv)
+EOD
+
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+my $done    = 0;
+my $suggest = "";
+
+my %opt = init_app(
+    help_text => "Wrapper around get_iplayer
+"
+    , help_cmdline => "$program [--help] [options] [shows to match]
+  $program 
+    will just show the output from 'get_iplayer --category=$DEFAULT_CATEGORIES'
+  $program --add='123,345,222'
+    add items into record queue
+  $program 'doctor who'
+    find things matching doctor who
+  $program --categories='film,comedy'
+    find films and comedy items
+",
+    options => {
+        'verbose|v'      => 'Explain a bit of what is going on',
+        'add|a=s'        => 'list of items to add to record queue (get_iplayer --pvrqueue)',
+        'suggest|s'      => 'Find and add suggestions',
+        'categories|c=s' => {
+            desc => 'override default list of categories to search against',
+
+            # default => $DEFAULT_CATEGORIES,
+        },
+        'recent|r=i' => {
+            desc    => "How recent to look back",
+            default => $DEFAULT_RECENT
+        },
+        'kids|k'  => 'include childrens program in search results',
+        'fetch|f' => 'fetch the record queue (get_iplayer --pvr)'
+    }
+);
+
+my $orm = Iplayer::Schema->connect( IPLAYER_SQLITE, "", "" );
+
+# Iplayer::Schema::Download->has_many('name' => 'Iplayer::Schema::Tv', 'name');
+
+# this is a nasty piece of logic to do things!
+
+if ( $opt{suggest} ) {
+
+    # record list is a view of things in history vs things on tv with matching names
+    # SELECT DISTINCT _index FROM record_list ;
+    my @ids = $orm->resultset('RecordList')->search(
+        {},
+        {   columns  => [qw/_index name/],
+            distinct => 1
+        }
+    );
+
+    say "Suggestions: ";
+    foreach my $id (@ids) {
+        say "\t" . $id->_index . ": " . $id->name;
+
+        # only fetch suggestions if we are asked to
+        $suggest .= " " . $id->_index if ( $opt{fetch} );
+    }
+    $done = 1 if( !$opt{fetch}) ;
+}
+
+my $command = $IPLAYER_CMD;
+if ( !$suggest && @ARGV ) {
+    my $match = join( ' ', @ARGV );
+    show_matches( $orm, $match, $opt{recent}, $opt{kids} );
+    $done = 1;
+}
+elsif ( !$suggest && $opt{categories} ) {
+    $opt{categories} =~ s/ /,/gsm;
+    $opt{categories} =~ s/\n/,/gsm;
+
+    show_categories( $orm, [ split( /,/, $opt{categories} ) ], $opt{recent}, $opt{kids} );
+    $done = 1;
+}
+elsif ( $opt{add} || $suggest ) {
+    $opt{add} = $opt{add} ? $opt{add} . " $suggest" : $suggest;
+    $opt{add} =~ s/,/ /gsm;
+    $opt{add} =~ s/\n/ /gsm;
+    $command .= "--pvrqueue $opt{add}";
+}
+elsif ( $opt{fetch} ) {
+    $command .= '--pvr';
+
+    # Iplayer::Schema::Download->has_many('name' => 'Iplayer::Schema::Tv', 'name');
+}
+elsif ( !$opt{suggest} && !$opt{fetch}) {
+    show_categories( $orm, \@categories, $opt{recent}, $opt{kids} );
+    $done = 1;
+}
+
+if ( !$done ) {
+
+    # no need for a fancy IPC type execute function as we want the output to the
+    # screen as it happens
+    say "Using '$command'" if ( $opt{verbose} );
+    my ( $ret, $out, $err ) = run_cmd($command);
+
+    # $out =~ s/^get_iplayer(.*?)details\.//sm;
+
+    # $out =~ s/.*?^Matches:(.*)/$1/sm;
+    # $out =~ s/.*?^Matches:\n//gsm;
+    # $out =~ s/\n\n//gsm;
+    # $out =~ s/^INFO:.*//gsm;
+
+    my $output = "";
+    foreach my $line ( split( /\n/, $out ) ) {
+        if ( $line =~ /^(\d+:.*?),/ ) {
+            $output .= "\t$1\n";
+        }
+    }
+
+    say "Adding:\n$output";
+    say STDERR $err if ($err);
+
+    if ( $opt{add} && $opt{fetch} ) {
+
+        # do fetch as a separate command if combined with add
+        $command = $IPLAYER_CMD . ' --pvr';
+        say "Using '$command'" if ( $opt{verbose} );
+        my $started = time() ;
+        my ( $ret, $out, $err ) = run_cmd($command);
+        say $out ;
+        say STDERR $err if ($err);
+        if( $started + 30 < time()) {
+            # if we spent some time fetching the shows, then we should update our db
+            # so that the next runthrough of suggest does not re-suggest things that we have
+            my ( $ret, $out, $err ) = run_cmd( DB_UPDATE);
+        }
+    }
+}

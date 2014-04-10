@@ -1,0 +1,158 @@
+#!/usr/bin/perl -w
+# convert mindmap to markdown
+#
+# (c) kevin Mulholland 2013, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# v0.1 moodfarm@cpan.org, initial work
+
+use 5.12.0;
+# use feature state ;
+use strict;
+use App::Basis;
+use Data::Printer;
+
+use XML::Simple;
+use File::Slurp qw(write_file);
+
+use constant CHANGE_POINT => 3;
+
+my $node_counter = 0;
+my $header       = "";
+
+# -----------------------------------------------------------------------------
+
+sub node_info {
+    my ( $prefix, $node ) = @_;
+    my $out = "";
+
+    if ( $node->{TEXT} ) {
+        $out .= "\n" if ( $prefix =~ /#/ );
+        $out .= "$prefix $node->{TEXT}\n";
+        # $out .= "\n" if ( $prefix =~ /#/ );
+    }
+
+    if ( $node->{richcontent} ) {
+        my $pre   = "";
+        my $notes = $node->{richcontent}->{pre};
+        if ( $node->{richcontent}->{html} ) {
+            if ( ref( $node->{richcontent}->{html}{body}{p} ) eq 'ARRAY' ) {
+                foreach my $line ( @{ $node->{richcontent}->{html}{body}{p} } ) {
+                    next if ( !$line || ref( $line) eq 'HASH');
+                    $notes .= "$line\n\n";
+                }
+            }
+            else {
+                $notes = $node->{richcontent}->{html}{body}{p};
+            }
+            $notes =~ s/\n\n//gsm;
+            $notes =~ s/^\s+//gsm;
+        }
+        $notes =~ s/<\/?\w+>//;    # strip all html things
+        if ( !$node_counter ) {
+            # notes on the primary node may be special
+            my (@keywords) = ( $notes =~ /^(:.*?)$/gsm );
+            $header = join( "\n", @keywords );
+            $notes =~ s/$header//;
+            $out .= $notes;
+        }
+        else {
+            if ( $prefix =~ /(\*)/ ) {
+                $pre = $prefix;
+                $pre =~ s/\*/ /;
+            }
+            $out .= "\n$pre$notes\n\n";
+        }
+    }
+
+    $node_counter++;
+
+    return $out;
+}
+
+my $level = 0;
+# -----------------------------------------------------------------------------
+sub process_node {
+    my $node = shift;
+    my $mark;
+    my $out = "";
+    # hold the state over calls
+    # state $level = 0 ;
+
+    $level++;
+
+    if ( $level < CHANGE_POINT ) {
+        $mark = '#' x $level;
+    }
+    else {
+        my $indent = $level - CHANGE_POINT;
+        $mark = ( $indent ? '    ' x $indent : '' ) . '*';
+    }
+
+    if ( ref $node eq 'ARRAY' ) {
+        foreach my $n (@$node) {
+            $out .= node_info( $mark, $n );
+            # recurse to process subnodes
+            if ( $n->{node} ) {
+                $out .= process_node( $n->{node} );
+            }
+        }
+    }
+    elsif ( ref $node eq 'HASH' ) {
+        # if trailing node just add it
+        # recurse to process subnodes
+        $out .= node_info( $mark, $node );
+        if ( $node->{node} ) {
+            $out .= process_node( $node->{node} );
+        }
+    }
+
+    $level--;
+    return $out;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text => "Convert mindmap (mm) files to markdown",
+    options   => {
+
+        'filename|f=s' => {
+            desc     => 'mindmap filename',
+            validate => sub {
+                my $file = shift;
+                $file =~ s/^~/$ENV{HOME}/;
+                -f $file && $file =~ /\.mm$/i;
+            },
+            required => 1,
+        },
+        'output|o=s' => { desc => 'optional file to ', }
+    }
+);
+
+$opt{filename} =~ s/^~/$ENV{HOME}/;
+show_usage("Bad filename $opt{filename}") if ( !-f $opt{filename} );
+
+if ( !$opt{output} ) {
+    # no output, so create filename with new extension
+    $opt{output} = $opt{filename};
+    $opt{output} =~ s/\.(.*?)$/.md/i;
+}
+else {
+    $opt{output} =~ s/^~/$ENV{HOME}/;
+}
+
+my $output;
+
+my $map = XMLin( $opt{filename} );
+
+# $output .= "% $map->{NAME}\n%\n% $map->{DATE}\n";
+$output .= process_node( $map->{node} );
+
+# prefix any special header notes
+$output = "$header\n$output" if ($header);
+
+write_file( $opt{output}, $output );

@@ -1,0 +1,127 @@
+#!/bin/bash
+# install salt master and minion via SSH on a number of servers
+# moodfarm@cpan.org
+
+user=kmulholland
+password="Password1"
+SERVER_LIST="/tmp/server_list.$$"
+SERVER_LIST2="/tmp/server_list2.$$"
+MASTER_LIST="/tmp/masters_list.$$"
+FAILED_LIST="/tmp/faild_list.$$"
+
+# -----------------------------------------------------------------------------
+
+function add_master {
+  if [ ! -f $MASTER_LIST ] ; then
+      echo "master:" > $MASTER_LIST
+    fi
+    echo "    - $1" >> $MASTER_LIST
+}
+
+# -----------------------------------------------------------------------------
+
+SERVER_LIST="libcloud-salt1
+libcloud-salt2
+libcloud-ns1
+libcloud-ns2
+libcloud-ns3
+libcloud-ldap1
+libcloud-ldap2
+libcloud-ldap3
+" 
+
+SERVER_LIST2="libcloud-gw1 
+libcloud-gw2
+libcloud-gw3
+" 
+
+for s in $SERVER_LIST
+do
+  server="$s.live.liberator-cloud.net" 
+  echo "ssh-copy-id $server"
+  ssh-copy-id $user@$server
+  if [ "$?" != "0" ] ; then
+    echo $server >>$FAILED_LIST
+  else 
+    echo "copying install script"
+    scp -pC ~/src/salt_installer $user@$server:/tmp/
+    echo "Installing minion"
+    ssh $user@$server "echo $password|sudo -S bash /tmp/salt_installer minion"
+    echo $server |grep -q salt
+    if [ "$?" == "0" ] ; then
+      echo "Installing Master"
+      ssh $user@$server "echo $password|sudo -S apt-get install salt-master"
+      # add to the list of masters
+      add_master $server
+    fi
+  fi
+done
+
+# some servers I have root access on already
+for s in $SERVER_LIST2
+do
+  server="$s.live.liberator-cloud.net" 
+  echo "copying install script"
+  scp -pC ~/src/salt_installer root@$server:/tmp/
+  echo "Installing minion"
+  ssh root@$server "bash /tmp/salt_installer minion"
+  echo $server |grep -q salt
+  if [ "$?" == "0" ] ; then
+    echo "Installing Master"
+    ssh root@$server "apt-get install salt-master"
+    # add to the list of masters
+    add_master $server
+  fi
+done
+
+# now we need to update all the minions with the list of masters
+# for s in `cat $SERVER_LIST`
+# do
+
+# done
+
+if [ -f $FAILED_LIST ] ; then
+  echo Failed to SSH to these hosts
+  echo
+  cat $FAILED_LIST
+fi
+
+
+MASTER_LIST="master:
+    - libcloud-salt2.live.liberator-cloud.net
+    - libcloud-salt2.live.liberator-cloud.net
+" 
+
+if [ -f $MASTER_LIST ] ; then 
+
+  # now create the salt_masters config file
+  for s in $SERVER_LIST
+  do
+    server="$s.live.liberator-cloud.net" 
+    echo $server
+
+    scp $MASTER_LIST $user@$server:/tmp/salt_masters.conf
+    ssh $user@$server "echo $password|sudo -S service salt-minion stop"
+    ssh $user@$server "echo $password|sudo -S mv /tmp/salt_masters.conf /etc/salt/minion.d/"
+    ssh $user@$server "echo $password|sudo -S cp /etc/hosts /etc/hosts.prev"
+    ssh $user@$server "echo $password|sudo -S grep -v 127.0.1.1 /etc/hosts > /tmp/fred"
+    ssh $user@$server "echo $password|sudo -S mv /tmp/fred /etc/hosts"  
+    ssh $user@$server "echo $password|sudo -S rm -rf /etc/salt/minion/pki/minion"
+    ssh $user@$server "echo $password|sudo -S service salt-minion start"
+  done
+
+  for s in $SERVER_LIST2
+  do
+    server="$s.live.liberator-cloud.net" 
+    echo $server
+
+    ssh root@$server "service salt-minion stop"
+    scp $MASTER_LIST root@$server:/etc/salt/minion.d/salt_masters.conf
+    ssh root@$server "cp /etc/hosts /etc/hosts.prev ; grep -v 127.0.1.1 /etc/hosts > /tmp/fred ; mv /tmp/fred /etc/hosts"
+    ssh root@$server "rm -rf /etc/salt/minion/pki/minion"
+    ssh root@$server "service salt-minion start"
+  done
+fi
+
+
+rm $MASTER_LIST 2>/dev/null

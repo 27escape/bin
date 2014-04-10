@@ -1,0 +1,196 @@
+#!/usr/bin/perl -w
+# listen to the twitter firehose for interesting things
+# kmulholland, v0.1, 2012-08-01
+# kmulholland, v0.1, 2013-05-16
+# unless you have firehose access (unlikely), the you should use the default 1% sample
+# moodfarm@cpan.org
+# source
+
+
+use 5.014;
+use strict;
+use warnings;
+
+use App::Basis;
+use App::Basis::Config;
+use AnyEvent::Twitter::Stream;
+use Encode;
+use Try::Tiny;
+use Data::Printer;
+use File::Slurp qw( append_file) ;
+
+# $AnyEvent::Twitter::Stream::STREAMING_SERVER = 1 ;
+
+my $done = AE::cv;
+
+# ----------------------------------------------------------------------------
+my $ACCOUNTS        = "/home/kmulholland/git/data/accounts.yaml";
+my $VERSION         = '0.1';
+my $DEFAULT_ACCOUNT = 'twitter';
+my $log = "/tmp/" . get_program() . ".log" ;
+my $verbose;
+my @must_match;
+my @can_match;
+my @ignore;
+my $super_count   = 0;
+my $matched_count = 0;
+my $listener;
+
+sub logger {
+    my ($msg, $lvl) = @_ ;
+
+    append_file( $log, "$msg\n") ;
+}
+
+# ----------------------------------------------------------------------------
+# got_tweet
+sub got_tweet {
+    my ($tweet) = @_;    # a hashref containing the tweet
+    my $display = 0;
+
+    return if ( !$tweet->{text} );
+
+    # work out if we can display this tweet
+    foreach my $i (@must_match) {
+        # say "i is " . p($i);
+        if ( $tweet->{text} =~ /$i/i ) {
+            $display++;
+        }
+    }
+    if ( $display != scalar @must_match ) {
+        $display = 0;
+        say STDERR "Ignoring cos not all match: $tweet->{text}" if ($verbose);
+    }
+    foreach my $i (@can_match) {
+        if ( $tweet->{text} =~ /$i/i ) {
+            $display = 1;
+            say STDERR "Some match ($i)" if ($verbose);
+            last;
+        }
+    }
+    foreach my $i (@ignore) {
+        if ( $tweet->{text} =~ /$i/i ) {
+            $display = 0;
+            say STDERR "On ignore list ($i): $tweet->{text}" if ($verbose);
+            last;
+        }
+    }
+
+    if ($display) {
+        $matched_count++;
+        say encode( 'UTF-8', "$tweet->{user}{screen_name} -> $tweet->{text}" );
+        debug( encode( 'UTF-8', p($tweet)), 'INFO') ;
+    }
+    if ( $super_count && $matched_count >= $super_count ) {
+        say "needs DESTROY";
+        $done->send;
+        #     # force kill the tweetstream object
+        #     die "Reached count $super_count" ;
+    }
+}
+
+# ----------------------------------------------------------------------------
+# connection_closed
+sub connection_closed {
+    warn "Connection to Twitter closed";
+}
+
+# ----------------------------------------------------------------------------
+# main
+my %opt = init_app(
+    help_text => 'Find tweets matching certain criteria',
+    # help_cmdline => 'Comma separated list of tweets to match, use + to force, and - to ignore eg. +money,-giveaway,cash',
+    options   => {
+        'tweets|t=s'  => {
+            desc => 'Comma separated list of tweets to match, use + to force, and - to ignore eg. +money,-giveaway,cash',
+            required => 1,
+        },
+        'account|a=s' => { desc => "Account to use in accounts file", default => $DEFAULT_ACCOUNT },
+        'count|c=i'   => 'stop after this many matches default [infinite]',
+        'verbose'    => 'tell us whats going on',
+        'source|s=s' => {
+            desc     => 'source for data',
+            default  => 'sample',
+            validate => sub { my $src = shift; return $src =~ /^firehose$|^sample$/i; },
+        }
+    },
+    debug => \&logger,
+);
+
+my $cfg             = App::Basis::Config->new( filename => $ACCOUNTS );
+my $user            = $cfg->get("/accounts/$opt{account}/user");
+my $pass            = $cfg->get("/accounts/$opt{account}/pass");
+
+msg_exit( "Could not find $opt{account} in account file", 2 ) if ( !$user && !$pass );
+
+my $match;
+
+my $tweets = $opt{tweets} ;
+# join( ',', @ARGV) ;
+
+# work out what we must have, can have and should not have
+foreach my $item ( split( ',', $tweets ) ) {
+    if ( $item =~ /\+(.*)/ ) {
+        push @must_match, $1;
+    }
+    elsif ( $item =~ /\-(.*)/ ) {
+        push @ignore, $1;
+    }
+    else {
+        push @can_match, $item;
+    }
+}
+
+# join the two allowed matches together
+$match = join( ',', @must_match, @can_match );
+
+show_usage('No positive tweets to match') if ( !$match );
+$verbose = $opt{verbose};
+
+$super_count = $opt{count} if ( defined $opt{count} && $opt{count} > 0 ) ;
+print "Listening for tweets '$match'";
+if( @ignore) {
+    print " ignoring " . join( ',', @ignore) ;
+}
+say "\n" ;
+
+try {
+    # receive updates from @following_ids
+    $listener = AnyEvent::Twitter::Stream->new(
+        username        => $user,
+        password        => $pass,
+        consumer_key    => $cfg->get("/accounts/$opt{account}/consumer_key"),
+        consumer_secret => $cfg->get("/accounts/$opt{account}/consumer_secret"),
+        token           => $cfg->get("/accounts/$opt{account}/token"),
+        token_secret    => $cfg->get("/accounts/$opt{account}/token_secret"),
+        method          => lc( $opt{source} ),    # "firehose" for everything, "sample" for sample timeline
+        use_compression => 1,
+        on_tweet        => \&got_tweet,
+        on_keepalive    => sub {
+            warn "ping\n";
+        },
+        on_error => sub {
+            my $error = shift;
+            warn "ERROR: $error";
+            $done->send;
+        },
+        on_eof => sub {
+            $done->send;
+        },
+        timeout => 45,
+    );
+}
+catch {
+    say "Failed to tweetstream: $@";
+    $done->send;
+};
+
+$done->recv;
+
+if ($listener) {
+    # should not get here
+    say "tweetstream " . p($listener);
+}
+else {
+    say "could not connect to twitter";
+}

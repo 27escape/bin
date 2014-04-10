@@ -1,0 +1,248 @@
+#!/usr/bin/env perl
+# script to extract a range of colums/rows from an excel spreadsheet
+# and present it as a csv, there is also the option to rotate the
+# output,
+#
+# (c) kevin Mulholland 2002, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+# 28/09/2011 moodfarm@cpan.org, using Text::CSV::Slurp and App::Basis
+
+use 5.010 ;
+
+use strict ;
+use warnings ;
+use Data::Dumper qw(Dumper) ;
+$Data::Dumper::Terse = 1 ;
+use Spreadsheet::ParseExcel ;
+use Spreadsheet::XLSX ;
+use App::Basis ;
+
+my $default_delimitor = ',' ;
+
+# -----------------------------------------------------------------------------
+### error
+# writes a message to STDERR
+#
+sub error
+{
+  printf STDERR shift ;
+}
+
+# -----------------------------------------------------------------------------
+### col2int
+# converts a excel row letter into an int for use in an array
+#
+sub col2int
+{
+  my $result = 0 ;
+  my $str    = shift ;
+  my $incr   = 0 ;
+
+  for ( my $i = length($str); $i > 0; $i-- ) {
+    my $char = substr( $str, $i - 1 ) ;
+    my $curr += ord( lc($char) ) - ord('a') + 1 ;
+    $curr *= $incr if ($incr) ;
+    $result += $curr ;
+    $incr   += 26 ;
+  }
+
+  # this is one out as we range 0..x-1 not 1..x
+  $result-- ;
+
+  return $result ;
+}
+
+# -----------------------------------------------------------------------------
+### int2col
+# convert a column number into column letters
+# @note this is quite a brute force coarse method
+#   does not manage values over 701 (ZZ)
+#   but thats OK as Excel only goes up to IV
+# @arg number, to convert
+# @returns string, column name
+#
+sub int2col
+{
+  my $out = "" ;
+  my $val = shift ;
+
+  do {
+    $out .= chr( ( $val % 26 ) + ord('A') ) ;
+    $val = int( $val / 26 ) - 1 ;
+  } while ( $val >= 0 ) ;
+
+  return reverse $out ;
+}
+
+# -----------------------------------------------------------------------------
+### sheetRef
+# convert an excel letter-number address into a useful array address
+# @note that also Excel uses X-Y notation, we normally use Y-X in arrays
+# @args $str, excel coord eg. A2
+# @returns an array - 2 elements - column, row, or undefined
+#
+sub sheetRef
+{
+  my $str = shift ;
+  my @ret ;
+
+  $str =~ m/^(\D+)(\d+)$/ ;
+
+  if ( $1 && $2 ) {
+    push( @ret, $2 - 1, col2int($1) ) ;
+  }
+  if ( $ret[0] < 0 ) {
+    undef @ret ;
+  }
+
+  return @ret ;
+}
+
+# -----------------------------------------------------------------------------
+### xls2csv
+# convert a chunk of an excel file into csv text chunk
+# @args $param, sheet-colrow:colrow (1-A1:B2 or A1:B2 for sheet 1
+# @args $rotate, 0 or 1 decides if output should be rotated or not
+# @returns string containing a chunk of csv
+#
+sub xls2csv
+{
+  my ( $filename, $regions, $rotate, $delimitor ) = @_ ;
+  my $sheet  = 0 ;
+  my $output = "" ;
+
+  # extract any sheet number from the region string
+  $regions =~ /^?<sheetnum>(\d+)-?<regions>(.*)/ ;
+  if ($2) {
+    $sheet   = $+{sheetnum} - 1 ;
+    $regions = $+{regions} ;
+  }
+
+  # now extract the start and end regions
+  # while I would like this to use name captures, these seem to be a bit pants
+  # when trying to match some things
+  # the following causes a perl error
+  #     $regions =~ /<start>([a-z]?\d+):?<end>([a-z]?\d+)/i;
+  # this one does not match, even though it should
+  #     $regions =~ /^<start>([a-z]?\d+):?<end>([a-z]?\d+)/i;
+  $regions =~ /([a-z]?\d+):([a-z]?\d+)/i ;
+  my ( $start, $end ) = ( $1, $2 ) ;
+
+  # bomb out if bad
+  show_usage("Bad region ($regions)") if ( !$start || !$end ) ;
+
+  my @start = sheetRef($start) ;
+  my @end   = sheetRef($end) ;
+
+  # bomb out if bad
+  show_useage("Bad coorinates - $1") if ( !@start ) ;
+  show_useage("Bad coorinates - $2") if ( !@end ) ;
+
+  if ( $start[1] > $end[1] ) {
+    error("Bad COLUMN ordering\n") ;
+    error( "Start column " . int2col( $start[1] ) ) ;
+    error( " after end column " . int2col( $end[1] ) . "\n" ) ;
+    return "" ;
+  }
+  if ( $start[0] > $end[0] ) {
+    error("Bad ROW ordering\n") ;
+    error( "Start row " . ( $start[0] + 1 ) ) ;
+    error( " after end row " . ( $end[0] + 1 ) . "\n" ) ;
+    exit ;
+  }
+
+  # start the excel object now
+  my $oExcel ;
+  if ( $filename =~ /xlsx$/i ) {
+    $oExcel = new Spreadsheet::XLSX ;
+  } else {
+    $oExcel = new Spreadsheet::ParseExcel ;
+  }
+  my $oBook = $oExcel->Parse($filename) ;
+
+  # open the sheet
+  my $oWkS = $oBook->{Worksheet}[$sheet] ;
+
+  # now check that the region exists in the file
+  # if not trucate to the possible region
+  # output a warning msg
+  if ( $start[1] < $oWkS->{MinCol} ) {
+    error( int2col( $start[1] ) . " < min col " . int2col( $oWkS->{MinCol} ) . " Reseting\n" ) ;
+    $start[1] = $oWkS->{MinCol} ;
+  }
+  if ( $end[1] > $oWkS->{MaxCol} ) {
+    error( int2col( $end[1] ) . " > max col " . int2col( $oWkS->{MaxCol} ) . " Reseting\n" ) ;
+    $end[1] = $oWkS->{MaxCol} ;
+  }
+  if ( $start[0] < $oWkS->{MinRow} ) {
+    error( "" . ( $start[0] + 1 ) . " < min row " . ( $oWkS->{MinRow} + 1 ) . " Reseting\n" ) ;
+    $start[0] = $oWkS->{MinCol} ;
+  }
+  if ( $end[0] > $oWkS->{MaxRow} ) {
+    error( "" . ( $end[0] + 1 ) . " > max row " . ( $oWkS->{MaxRow} + 1 ) . " Reseting\n" ) ;
+    $end[0] = $oWkS->{MaxRow} ;
+
+  }
+
+  my $x1 = $start[1] ;
+  my $y1 = $start[0] ;
+  my $x2 = $end[1] ;
+  my $y2 = $end[0] ;
+
+  if ( !$rotate ) {
+    for ( my $y = $y1; $y <= $y2; $y++ ) {
+      for ( my $x = $x1; $x <= $x2; $x++ ) {
+        my $cell = $oWkS->{Cells}[$y][$x] ;
+        if ($cell) {
+          $output .= $cell->Value ;
+        } else {
+          $output .= " " ;
+        }
+        $output .= $delimitor if ( $x != $x2 ) ;
+      }
+      $output .= "\n" ;
+    }
+  } else {
+    for ( my $x = $x1; $x <= $x2; $x++ ) {
+      for ( my $y = $y1; $y <= $y2; $y++ ) {
+        my $cell = $oWkS->{Cells}[$y][$x] ;
+        if ($cell) {
+          $output .= $cell->Value ;
+        }
+        $output .= "," if ( $y != $y2 ) ;
+      }
+      $output .= "\n" ;
+    }
+  }
+
+  return $output ;
+}
+
+# ----------------------------------------------------------------------------
+# main
+my $program = get_program() ;
+
+my %opt = init_app(
+  help_text => "Convert a Excel spreadsheet into csv text
+    $program -d '|' filename.xls 1-A1:A12
+    $program filename.xls -r A1:M1
+"
+  ,
+  help_cmdline => 'filename sheet-colrow:colrow',
+  options      => {
+    'delimitor=s' => "output delimitor [default: '$default_delimitor']",
+    'rotate|r'    => 'rotate input data, columns become rows'
+  }
+) ;
+
+show_usage('Missing arguments') if ( !( defined $ARGV[0] ) ) ;
+
+$opt{delimitor} |= $default_delimitor ;
+my $filename = $ARGV[0] ;
+my $coords   = $ARGV[1] ;
+
+show_usage("No co-ordinates defined") if ( !$coords ) ;
+show_usage("File $filename does not exist") if ( !-f $filename || !-r $filename ) ;
+say "coords $filename ($coords)" ;
+
+printf xls2csv( $filename, $coords, $opt{rotate}, $opt{delimitor} ) ;
