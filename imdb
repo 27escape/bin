@@ -1,7 +1,7 @@
-#!/usr/bin/perl -w
+#!/usr/bin/env perl
 # moodfarm@cpan.org
 
-use 5.14.0 ;
+use 5.10.0 ;
 use strict ;
 use warnings ;
 
@@ -12,12 +12,17 @@ use Data::Dumper qw(Dumper) ;
 $Data::Dumper::Terse = 1 ;
 use IMDB::Film ;
 use Try::Tiny ;
+use Path::Tiny ;
 use App::Basis ;
 
 # ----------------------------------------------------------------------------
 
 use constant MAX_MATCHES => 5 ;
 use constant TIMEOUT     => 2 ;
+
+my $imdb_cache = '/tmp/imdb_cache' ;
+# create a place to cache the imdb data
+path( $imdb_cache)->mkpath() ;
 
 # ----------------------------------------------------------------------------
 # build info about the film in a consistant manner
@@ -118,7 +123,7 @@ try {
     crit       => $name,
     timeout    => $opt{timeout},
     cache      => 1,
-    cache_root => '/tmp/imdb_cache',
+    cache_root => $imdb_cache,
     cache_exp  => '1 d',
     search     => "find?s=tt&mx=$max&q="
   ) ;
@@ -127,7 +132,7 @@ try {
   say "err is $_ " ;
 } ;
 
-say Dumper( $search) ;
+# say Dumper( $search) ;
 
 my $spacer = '    ' ;
 
@@ -189,4 +194,4 @@ if ( $search && $search->status ) {
   msg_exit( $program . ': Something went badly wrong ' . $err, 3 ) ;
 }
 
-tidy_exit(0) ;
+
