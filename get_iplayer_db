@@ -25,13 +25,16 @@ get_iplayer 1>&2 > /dev/null
 txt2db -c --delimitor='|' tv,$IPLAYER |sqlite3 $SQLFILE
 
 echo "pid|name|short_desc|type|added|quality|stored_to|default_field|duration|desc|channel|categories|thumbnail|adult|url|episode" >$HISTORY
-cat $HOME/.get_iplayer/download_history >>$HISTORY
+# replace double for single quotes so that csv import does not mess up
+cat $HOME/.get_iplayer/download_history | tr '"' "'" >>$HISTORY
 
 # update the with the history
 txt2db -c --delimitor='|' downloads,$HISTORY |sqlite3 $SQLFILE
 
+
 # create the name views
-sqlite3 $SQLFILE "CREATE VIEW IF NOT EXISTS download_names AS
+sqlite3 $SQLFILE "DROP VIEW IF EXISTS download_names ;
+    CREATE VIEW IF NOT EXISTS download_names AS
     SELECT pid, CASE
     WHEN 
         (instr( name, ':')) != 0 THEN substr( name, 0, instr( name, ':'))
@@ -40,7 +43,8 @@ sqlite3 $SQLFILE "CREATE VIEW IF NOT EXISTS download_names AS
     END AS 'name' from downloads ;"
 
 
-sqlite3 $SQLFILE "CREATE VIEW IF NOT EXISTS tv_names AS
+sqlite3 $SQLFILE "DROP VIEW IF EXISTS tv_names ;
+    CREATE VIEW IF NOT EXISTS tv_names AS
     SELECT tv._index, pid, CASE
     WHEN 
         (instr( name, ':')) != 0 THEN substr( name, 0, instr( name, ':'))
@@ -49,12 +53,16 @@ sqlite3 $SQLFILE "CREATE VIEW IF NOT EXISTS tv_names AS
     END AS 'name' from tv ;"
 
 # and the view of things to record
-sqlite3 $SQLFILE "CREATE VIEW IF NOT EXISTS record_list AS
-    SELECT t._index,t.name,t.pid from tv_names as t, download_names as d
+sqlite3 $SQLFILE "DROP VIEW IF EXISTS record_list ;
+    CREATE VIEW IF NOT EXISTS record_list AS
+    SELECT DISTINCT t._index,t.name,t.pid from tv_names as t, download_names as d
     WHERE 
         t.name = d.name 
     and 
-        t.pid NOT IN (SELECT pid from download_names);"
+        t.pid NOT IN (SELECT pid from downloads);"
+
+#        t.pid NOT IN (SELECT pid from download_names);"
+
 
 # update the DBIx::Class schema
 cd ~/src/lib
