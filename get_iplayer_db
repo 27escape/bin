@@ -12,27 +12,27 @@ export IPLAYER="$HOME/.get_iplayer/tv.cache"
 export HISTORY=/tmp/history.$$.csv
 
 # update the podcast db
-get_iplayer --type=podcast 1>&2 > /dev/null
-txt2db -c --delimitor='|' podcast,$HOME/.get_iplayer/podcast.cache |sqlite3 $SQLFILE
+#get_iplayer --type=podcast 1>&2 > /dev/null
+# replace double quotes for single quotes so that csv import does not mess up
+# cat $HOME/.get_iplayer/podcast.cache | tr -d '"' | tr -d  "'" | txt2db -c --delimitor='|' podcast,- |sqlite3 $SQLFILE
 
 # update the radio db
 get_iplayer --type=radio 1>&2 > /dev/null
-txt2db -c --delimitor='|' radio,$HOME/.get_iplayer/radio.cache |sqlite3 $SQLFILE
+# replace double quotes for single quotes so that csv import does not mess up
+#cat $HOME/.get_iplayer/radio.cache |  tr -d '"' | tr -d  "'" | txt2db -c --delimitor='|' radio,- |sqlite3 $SQLFILE
 
 # now do the TV
 get_iplayer 1>&2 > /dev/null
 # update the db
-txt2db -c --delimitor='|' tv,$IPLAYER |sqlite3 $SQLFILE
+# replace double quotes for single quotes so that csv import does not mess up
+cat $IPLAYER |  tr -d '"' | tr -d  "'" | txt2db -c --delimitor='|' tv,- |sqlite3 $SQLFILE
 
+# update the with the history, needs a header first
 echo "pid|name|short_desc|type|added|quality|stored_to|default_field|duration|desc|channel|categories|thumbnail|adult|url|episode" >$HISTORY
-# replace double for single quotes so that csv import does not mess up
-cat $HOME/.get_iplayer/download_history | tr '"' "'" >>$HISTORY
+# replace double quotes for single quotes so that csv import does not mess up
+cat $HISTORY $HOME/.get_iplayer/download_history | tr -d '"' | tr -d "'" | txt2db -c --delimitor='|' downloads,- |sqlite3 $SQLFILE
 
-# update the with the history
-txt2db -c --delimitor='|' downloads,$HISTORY |sqlite3 $SQLFILE
-
-
-# create the name views
+# create the views
 sqlite3 $SQLFILE "DROP VIEW IF EXISTS download_names ;
     CREATE VIEW IF NOT EXISTS download_names AS
     SELECT pid, CASE
@@ -41,7 +41,6 @@ sqlite3 $SQLFILE "DROP VIEW IF EXISTS download_names ;
     ELSE 
         name
     END AS 'name' from downloads ;"
-
 
 sqlite3 $SQLFILE "DROP VIEW IF EXISTS tv_names ;
     CREATE VIEW IF NOT EXISTS tv_names AS

@@ -264,11 +264,11 @@ sub write_line {
             map {
                 my $key = $schema->{$_}->[2];
                 my $out = "";
-                if ( defined $row->{$key} ) {
+                if ( $key && defined $row->{$key} ) {
                     $out = $row->{$key};
 
                     # remove commas for numbers
-                    $out =~ s/,//g if ( $schema->{$key}->[0] =~ /INT|FLOAT/ );
+                    $out =~ s/,//g if ( $schema->{$key}->[0] && $schema->{$key}->[0] =~ /INT|FLOAT/ );
                     $out =~ s/'/''/g;
                     $out = "'$out'";
                 }
