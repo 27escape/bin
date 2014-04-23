@@ -125,22 +125,6 @@ sub show_categories {
     }
 }
 
-# check what we have recorded and suggest programs of the same name,
-# that we have not yet recorded
-sub suggest_recordings {
-    my ($orm) = @_;
-
-    # suggestion based on program name
-    my $suggest = <<EOD ;
-select DISTINCT tv._index, tv.pid, tv.name,tv.desc, tv.categories, tv.channel, tv.seriesnum,tv.episodenum from tv,downloads
-where 
-    tv.name = downloads.name 
-AND
-    downloads.pid NOT IN ( select pid from tv)
-EOD
-
-}
-
 # -----------------------------------------------------------------------------
 # main
 
