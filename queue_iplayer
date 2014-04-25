@@ -21,7 +21,7 @@ get_iplayer --type=radio "hitchhiker's" --pvr-queue >/dev/null
 # TV things
 get_iplayer --pvr-queue "Family Guy" "American Dad" --pvr-queue >/dev/null
 get_iplayer --pvr-queue "the crimson field" "monkey planet" "mountain gorilla" "planet earth" "the living planet" "wild wales"
-get_iplayer --pvr-queue "the plantagenets" "jamaica inn"
+get_iplayer --pvr-queue "the plantagenets" "jamaica inn" "hinterland"
 get_iplayer --pvr-queue "doctor who" "sherlock" "salamander" "The Musketeers" "atlantis" "wallance and gromit" --pvr-queue >/dev/null
 get_iplayer --pvr-queue "rome" "egypt"  "romans" "ancient greece" --pvr-queue >/dev/null
 get_iplayer --pvr-queue "hairy bikers" "life of rock" "wild china"  "infested" "dissected" "secrets of bones" "The Fantastical World of Hormones" --pvr-queue >/dev/null
