@@ -1,0 +1,181 @@
+# PODNAME: tweetq - simple script to send a tweet
+# ABSTRACT: send a tweet
+
+=head1 SYNOPSIS
+
+    add a message to the default queue
+    > tweetq "message to tweet"
+
+    publish a single message from the queue 'account2'
+    > tweetq --queue=account2 -p
+
+    publish all message from the queue 'account2'
+    > tweetq --queue=account2 -p
+
+    to get full help use
+    > tweet --help   
+
+=head1 DESCRIPTION
+
+Add a tweet to a queue or publish item(s) from that queue to twitter
+
+config file is in ~/.tweetq, get your api keys at https://dev.twitter.com
+
+tweetq: 
+  default: account
+  account:
+    file: ~/tweetq/account.tweets
+    consumer_key: <consumer_key>
+    consumer_secret: <consumer_secret>
+    access_token: <access_token>
+    access_token_secret: <access_token_secret>
+  account2:
+    file: ~/tweetq/account2.tweets
+    consumer_key: <consumer_key>
+    consumer_secret: <consumer_secret>
+    access_token: <access_token>
+    access_token_secret: <access_token_secret>
+
+
+=cut
+
+#
+# (c) yourname, your@email.address.com
+# this code is released under the Perl Artistic License
+
+use 5.10.0;
+use strict;
+use warnings;
+use POSIX qw(strftime);
+use Net::Twitter::Lite::WithAPIv1_1;
+use YAML qw(LoadFile DumpFile);
+use Path::Tiny;
+use Try::Tiny;
+use App::Basis;
+use App::Basis::Config;
+use Data::Printer;
+
+my $VERSION = '0.1';
+
+my $nt;    # net twitter object - nasty global
+
+# -----------------------------------------------------------------------------
+# publish a single tweet, returns 1 if successful
+sub publish {
+    my ( $tweet, $verbose ) = @_;
+    my $result;
+
+    try {
+        debug( 'INFO', "sending $tweet" ) if ($verbose);
+
+        $result = $nt->update($tweet);
+    }
+    catch {
+        debug( 'ERROR', "$_:  Could not send tweet - $tweet" );
+    };
+
+    return ( $result && $result->{created_at} ) ? 1 : 0;
+}
+
+# -----------------------------------------------------------------------------
+# basic debug to STDERR, redirect to anywhere you like
+
+sub other_debug {
+    my ( $lvl, $debug ) = @_;
+    if ( !$debug ) {
+        $debug = $lvl;
+
+        # set a default level
+        $lvl = 'INFO';
+    }
+
+    say STDERR strftime( '%Y-%m-%d %H:%M:%S', gmtime( time() ) ) . " [$lvl] " . get_program() . " " . $debug;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+my $action;
+
+my %opt = init_app(
+    help_text    => "Boiler plate code for an App::Basis app",
+    help_cmdline => "twitter message to send
+use perldoc $program to get the setup for the ~/.$program config file",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'publish|p' => { desc => 'Publish top item in the queue', },
+        'queue|q=s' => {
+            desc    => 'tweet queue to process',
+            default => "default",
+        },
+        'all|a' => 'publish all items in the queue'
+    }
+);
+set_debug( \&other_debug );
+
+my $msg = join( ' ', @ARGV );
+
+# lets have the config named after this program
+my $cfg = App::Basis::Config->new( filename => "$ENV{HOME}/.$program" );
+
+$opt{queue} ||= 'default';
+my $queue    = $cfg->get("/tweetq/$opt{queue}");
+my $settings = $cfg->get("/tweetq/$queue");
+my $file     = fix_filename( $settings->{file} );
+
+if ( $opt{verbose} ) {
+    debug( "INFO", "Started" );
+}
+
+my $tweets;
+if ( -f $file ) {
+    $tweets = LoadFile($file);
+}
+
+# if we have a message then this should be added to the queue asap
+push @{$tweets}, $msg if ($msg);
+
+$nt = Net::Twitter::Lite::WithAPIv1_1->new(
+    consumer_key        => $settings->{consumer_key},
+    consumer_secret     => $settings->{consumer_secret},
+    access_token        => $settings->{access_token},
+    access_token_secret => $settings->{access_token_secret},
+    ssl                 => 1,
+    clientname          => $program,
+    useragent           => "$program/v$VERSION",
+);
+
+if ( $opt{all} ) {
+    $action = 1;
+    my $result;
+    my $break;
+    while ( @{$tweets} && !$break ) {
+        if ( publish( $tweets->[0], $opt{verbose} ) ) {
+
+            # remove top entry
+            shift @{$tweets};
+        }
+        else {
+            $break = 1;
+        }
+    }
+}
+elsif ( $opt{publish} ) {
+    $action = 1;
+    if ( publish( $tweets->[0], $opt{verbose} ) ) {
+
+        # remove top entry
+        shift @{$tweets};
+    }
+}
+
+# make sure there is a directory for the file
+if ( !-d path($file)->dirname ) {
+    path( path($file)->dirname )->mkpath;
+}
+DumpFile( $file, \@{$tweets} );
+
+if ( !$action && !$msg ) {
+    show_usage("Parameters are required");
+}
