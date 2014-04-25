@@ -101,7 +101,7 @@ my $program = get_program();
 my $action;
 
 my %opt = init_app(
-    help_text    => "Simple script to queue twitter messages for later publication
+    help_text => "Simple script to queue twitter messages for later publication
         use perldoc $program to get the setup for the ~/.$program config file",
     help_cmdline => "twitter message to send",
     options      => {
@@ -117,6 +117,10 @@ my %opt = init_app(
 set_debug( \&other_debug );
 
 my $msg = join( ' ', @ARGV );
+if ( $msg && length($msg) > 140 ) {
+    say STDERR "tweet too long, truncating";
+    $msg = substr( $msg, 0, 140) ;
+}
 
 # lets have the config named after this program
 my $cfg = App::Basis::Config->new( filename => "$ENV{HOME}/.$program" );
@@ -126,7 +130,7 @@ my $queue    = $cfg->get("/tweetq/$opt{queue}");
 my $settings = $cfg->get("/tweetq/$queue");
 my $file     = fix_filename( $settings->{file} );
 
-msg_exit( "Could not find valid config in ~/.$program", 2) if( !$queue || !$settings || !$file) ;
+msg_exit( "Could not find valid config in ~/.$program", 2 ) if ( !$queue || !$settings || !$file );
 
 if ( $opt{verbose} ) {
     debug( "INFO", "Started" );
