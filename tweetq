@@ -1,3 +1,4 @@
+#!/usr/bin/env perl
 # PODNAME: tweetq - simple script to send a tweet
 # ABSTRACT: send a tweet
 
@@ -36,6 +37,7 @@ tweetq:
     access_token: <access_token>
     access_token_secret: <access_token_secret>
 
+idea stolen from L<Net::Twitter::Queue>
 
 =cut
 
@@ -99,11 +101,11 @@ my $program = get_program();
 my $action;
 
 my %opt = init_app(
-    help_text    => "Boiler plate code for an App::Basis app",
-    help_cmdline => "twitter message to send
-use perldoc $program to get the setup for the ~/.$program config file",
+    help_text    => "Simple script to queue twitter messages for later publication
+        use perldoc $program to get the setup for the ~/.$program config file",
+    help_cmdline => "twitter message to send",
     options      => {
-        'verbose|v' => 'Dump extra useful information',
+        'verbose|v' => 'Output useful information',
         'publish|p' => { desc => 'Publish top item in the queue', },
         'queue|q=s' => {
             desc    => 'tweet queue to process',
@@ -123,6 +125,8 @@ $opt{queue} ||= 'default';
 my $queue    = $cfg->get("/tweetq/$opt{queue}");
 my $settings = $cfg->get("/tweetq/$queue");
 my $file     = fix_filename( $settings->{file} );
+
+msg_exit( "Could not find valid config in ~/.$program", 2) if( !$queue || !$settings || !$file) ;
 
 if ( $opt{verbose} ) {
     debug( "INFO", "Started" );
