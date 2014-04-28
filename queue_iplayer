@@ -1,29 +1,131 @@
-#!/bin/sh
-# queue up things for later retrival from BBC get_iplayer
-# moodfarm@cpan.org
+#!/usr/bin/env perl
+# PODNAME: queue_iplayer - add know show names to the iplayer queue
+# ABSTRACT: Add tv shows to the iplayer pvr queue
 
-# get fantasy radio shows from radio 4 extra
-# matches=`get_iplayer --type=radio --channel=extra --category=fantas |ack  '^\d+:'|awk -F':' '{print $1}'`
+=head1 NAME
 
-# for match in `get_iplayer --type=radio --channel=extra --category=fantas 2>/dev/null |ack  '^\d+:'|awk -F':' '{print $1}'`
-# do
-#     # get_iplayer --type=radio -g "$match"
-#     get_iplayer --type=radio --pvr- "$match"
-# done
+ queue_iplayer
 
-# RADIO things
-# add all matched files to the record queue
-get_iplayer --type=radio --category=scifi --search=.* --pvr-queue >/dev/null
-get_iplayer --type=radio pratchett --pvr-queue >/dev/null
-get_iplayer --type=radio "The Infinite Monkey Cage" "in our time" --pvr-queue >/dev/null
-get_iplayer --type=radio "hitchhiker's" --pvr-queue >/dev/null
+=head1 SYNOPSIS
 
-# TV things
-get_iplayer --pvr-queue "Family Guy" "American Dad" --pvr-queue >/dev/null
-get_iplayer --pvr-queue "the crimson field" "monkey planet" "mountain gorilla" "planet earth" "the living planet" "wild wales"
-get_iplayer --pvr-queue "the plantagenets" "jamaica inn" "hinterland"
-get_iplayer --pvr-queue "doctor who" "sherlock" "salamander" "The Musketeers" "atlantis" "wallance and gromit" --pvr-queue >/dev/null
-get_iplayer --pvr-queue "rome" "egypt"  "romans" "ancient greece" --pvr-queue >/dev/null
-get_iplayer --pvr-queue "hairy bikers" "life of rock" "wild china"  "infested" "dissected" "secrets of bones" "The Fantastical World of Hormones" --pvr-queue >/dev/null
+    just add known tv shows to iplayer queue
+    > queue_iplayer
 
-get_iplayer_db
+    add a tv show
+    > queue_iplayer doctor who
+
+    add a radio show
+    > queue_iplayer --type=radio In Our Time
+
+    to get full help use
+    > queue_iplayer --help   
+
+    yaml config file in ~/.queue_iplayer
+    
+    tv:
+      - the living planet
+      - the plantagenets
+      - hinterland
+      - doctor who
+      - sherlock
+     rado:
+      - pratchett
+      - The Infinite Monkey Cage
+
+=head1 DESCRIPTION
+
+Queue tv and radio shows to the iplayer pvr queue. Optionally add a new item
+to either of those lists
+
+=cut
+
+#
+# (c) yourname, your@email.address.com
+# this code is released under the Perl Artistic License
+
+use 5.10.0;
+use strict;
+use warnings;
+use POSIX qw(strftime);
+use App::Basis;
+use App::Basis::Config;
+
+# -----------------------------------------------------------------------------
+
+my $IPLAYER_CMD = "$ENV{HOME}/bin/get_iplayer ";
+
+# -----------------------------------------------------------------------------
+# basic debug to STDERR, redirect to anywhere you like
+
+sub other_debug {
+    my ( $lvl, $debug ) = @_;
+    if ( !$debug ) {
+        $debug = $lvl;
+
+        # set a default level
+        $lvl = 'INFO';
+    }
+
+    say STDERR strftime( '%Y-%m-%d %H:%M:%S', gmtime( time() ) ) . " [$lvl] " . get_program() . " " . $debug;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text    => "queue known tv/radio shows to iplayer pvr or add to the list and queue",
+    help_cmdline => "optional show name to add",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'type|c=s'  => {
+            default  => 'tv',
+            desc     => 'type of show to add [tv|radio]',
+            validate => sub { my $val = shift; return $val =~ /tv|radio/i ; }
+        }
+    }
+);
+set_debug( \&other_debug );
+if ( $opt{verbose} ) {
+    debug( "INFO", "Started" );
+}
+
+# lets have the config named after this program
+my $cfg = App::Basis::Config->new( filename => "$ENV{HOME}/.$program" );
+
+# example of using an app specifc config
+my $tv    = $cfg->get('/tv');
+my $radio = $cfg->get('/radio');
+my $show  = join( ' ', @ARGV );
+
+if ($show) {
+    if ( lc( $opt{type} ) eq 'radio' ) {
+        push @{$radio}, $show;
+        $cfg->set( "/radio", $radio );
+    }
+    else {
+        push @{$tv}, $show;
+        $cfg->set( "/tv", $tv );
+    }
+    $cfg->store();
+}
+
+# first up we always add the scifi radio shows
+my $command = $IPLAYER_CMD . '--type=radio --type=scifi --search=.* --pvr-queue';
+debug( "INFO", "Adding scifi radio shows");
+my ( $ret, $out, $err ) = run_cmd($command);
+
+# do the tv shows
+my $queue;
+map { $queue .= '"' . $_ . '" ' } @{$tv};
+$command = $IPLAYER_CMD . "--type=tv --pvr-queue $queue ";
+debug( "INFO", "Adding tv shows: $queue");
+( $ret, $out, $err ) = run_cmd($command);
+
+# do the radio shows
+$queue = "";    # reset the queue
+map { $queue .= '"' . $_ . '" '  } @{$radio};
+$command = $IPLAYER_CMD . "--type=radio --pvr-queue $queue ";
+debug( "INFO", "Adding radio shows: $queue");
+( $ret, $out, $err ) = run_cmd($command);
