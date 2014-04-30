@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
-# PODNAME: tweetq - simple script to send a tweet
-# ABSTRACT: send a tweet
+# PODNAME: tweetq - simple script to buffer or send a tweet
+# ABSTRACT: buffer or send a tweet
 
 =head1 SYNOPSIS
 
@@ -13,6 +13,9 @@
     publish all message from the queue 'account2'
     > tweetq --queue=account2 -p
 
+    list things in your queue
+    > tweetq --list
+
     to get full help use
     > tweet --help   
 
@@ -23,27 +26,28 @@ Add a tweet to a queue or publish item(s) from that queue to twitter
 config file is in ~/.tweetq, get your api keys at https://dev.twitter.com
 
 tweetq: 
-  default: account
-  account:
-    file: ~/tweetq/account.tweets
+  default: account2
+  basedir: ~/tweetq/
     consumer_key: <consumer_key>
     consumer_secret: <consumer_secret>
-    access_token: <access_token>
-    access_token_secret: <access_token_secret>
+  accounts:
+    - file: account.tweets
+      access_token: <access_token>
+      access_token_secret: <access_token_secret>
   account2:
-    file: ~/tweetq/account2.tweets
-    consumer_key: <consumer_key>
-    consumer_secret: <consumer_secret>
-    access_token: <access_token>
-    access_token_secret: <access_token_secret>
+    - file: account2.tweets
+      access_token: <access_token>
+      access_token_secret: <access_token_secret>
 
 idea stolen from L<Net::Twitter::Queue>
 
 =cut
 
 #
-# (c) yourname, your@email.address.com
+# (c) Kevin Mulholland, moodfarm@cpan.org
 # this code is released under the Perl Artistic License
+
+# -----------------------------------------------------------------------------
 
 use 5.10.0;
 use strict;
@@ -57,9 +61,18 @@ use App::Basis;
 use App::Basis::Config;
 use Data::Printer;
 
-my $VERSION = '0.1';
+# -----------------------------------------------------------------------------
+
+use constant DEFAULT_BASEDIR  => '~';
+use constant DEFAULT_CONSUMER => 'consumer key';
+use constant DEFAULT_SECRET   => 'consumer secret';
+use constant VERSION          => '0.2';
+
+# -----------------------------------------------------------------------------
 
 my $nt;    # net twitter object - nasty global
+my $testing = 0;
+my $program = get_program();
 
 # -----------------------------------------------------------------------------
 # publish a single tweet, returns 1 if successful
@@ -70,13 +83,92 @@ sub publish {
     try {
         debug( 'INFO', "sending $tweet" ) if ($verbose);
 
-        $result = $nt->update($tweet);
+        $result = $nt->update($tweet) if ( !$testing );
     }
     catch {
         debug( 'ERROR', "$_:  Could not send tweet - $tweet" );
     };
 
     return ( $result && $result->{created_at} ) ? 1 : 0;
+}
+
+# -----------------------------------------------------------------------------
+# build suitable config
+
+sub create_default_config {
+    my ($cfg) = @_;
+
+    if ( !$cfg->get('/tweetq') || !$cfg->get('/tweetq/basedir') ) {
+        $cfg->set( '/tweetq/basedir', DEFAULT_BASEDIR );
+    }
+    $cfg->set( '/tweetq/consumer_key',    DEFAULT_CONSUMER ) if ( !$cfg->get('/tweetq/consumer_key') );
+    $cfg->set( '/tweetq/consumer_secret', DEFAULT_SECRET )   if ( !$cfg->get('/tweetq/consumer_secret') );
+
+    $cfg->store();
+}
+
+# -----------------------------------------------------------------------------
+# connect to twitter with our consumer_key and secret, get a URL for the user
+# to paste into their browser and grab a authenication pin, pass that back to
+# twitter and get the user access_token and secret, add to config
+
+sub authorise_account {
+    my ($cfg) = @_;
+    my @creds;
+    my ( $access_token, $access_token_secret, $user_id, $screen_name );
+
+    my $key      = $cfg->get('/tweetq/consumer_key');
+    my $secret   = $cfg->get('/tweetq/consumer_secret');
+    my $accounts = $cfg->get('/tweetq/accounts');
+
+    my $twit = Net::Twitter::Lite::WithAPIv1_1->new(
+        traits          => [ 'API::RESTv1_1', 'OAuth' ],
+        consumer_key    => $key,
+        consumer_secret => $secret,
+        ssl             => 1,
+        clientname      => $program,
+        useragent       => "$program/v" . VERSION,
+    );
+
+    if ( !$twit->authorized ) {
+
+        # The client is not yet authorized: Do it now
+        print "Authorize this app at ", $twit->get_authorization_url, "\nand enter the PIN: ";
+
+        my $pin = <STDIN>;    # wait for input
+        chomp $pin;
+
+        @creds = $twit->request_access_token( verifier => $pin );
+    }
+
+    if (@creds) {
+        my ( $new, $offset );
+        ( $access_token, $access_token_secret, $user_id, $screen_name ) = @creds;
+
+        # find this entry or point to the end
+        foreach my $acc ( @{$accounts} ) {
+            if ( $acc->{name} eq $screen_name ) {
+                $new = 0;
+                last;
+            }
+            $offset++;
+        }
+
+        # update or append
+        $accounts->[$offset] = {
+            name                => $screen_name,
+            file                => $screen_name . ".tweets",
+            access_token        => $access_token,
+            access_token_secret => $access_token_secret
+        };
+        $cfg->set( '/tweetq/accounts', $accounts );
+
+        # set default if this is the only account
+        $cfg->set( '/tweetq/default', $screen_name ) if ( !$offset && $new );
+        $cfg->store;
+    }
+
+    return $screen_name;
 }
 
 # -----------------------------------------------------------------------------
@@ -97,7 +189,6 @@ sub other_debug {
 # -----------------------------------------------------------------------------
 # main
 
-my $program = get_program();
 my $action;
 
 my %opt = init_app(
@@ -108,34 +199,88 @@ my %opt = init_app(
         'verbose|v' => 'Output useful information',
         'publish|p' => { desc => 'Publish top item in the queue', },
         'queue|q=s' => {
-            desc    => 'tweet queue to process',
-            default => "default",
+            desc => 'tweet queue to process',
         },
-        'list|l'    => 'list the items in the queue',
-        'all|a' => 'publish all items in the queue'
+        'auth' => {
+            desc => 'Authenticate a new queue',
+        },
+        'list|l' => 'list the items in the queue',
+        'all'    => 'publish all items in the queue'
     }
 );
 set_debug( \&other_debug );
+debug( "INFO", "Started" ) if ( $opt{verbose} );
 
 my $msg = join( ' ', @ARGV );
 if ( $msg && length($msg) > 140 ) {
     say STDERR "tweet too long, truncating";
-    $msg = substr( $msg, 0, 140) ;
+    $msg = substr( $msg, 0, 140 );
 }
 
 # lets have the config named after this program
-my $cfg = App::Basis::Config->new( filename => "$ENV{HOME}/.$program" );
+my $cfg = App::Basis::Config->new( filename => "$ENV{HOME}/.$program", die_on_error => 1 );
 
-$opt{queue} ||= 'default';
-my $queue    = $cfg->get("/tweetq/$opt{queue}");
-my $settings = $cfg->get("/tweetq/$queue");
-my $file     = fix_filename( $settings->{file} );
+create_default_config($cfg);
+
+if (   $cfg->get('/tweetq/consumer_key') eq DEFAULT_CONSUMER
+    || $cfg->get('/tweetq/consumer_secret') eq DEFAULT_SECRET )
+{
+    msg_exit(
+        "You need to edit your config and set your consumer key and secret\n
+You may need to create a twitter app, goto https://dev/twitter.com"
+    );
+}
+
+# if we want to auth a new account
+if ( $opt{auth} ) {
+    debug( "INFO", "Attempting Authentication" ) if ( $opt{verbose} );
+
+    my $id = authorise_account($cfg);
+    if ( !$id ) {
+        msg_exit("Could not authorise twitter account");
+    }
+
+    debug( "INFO", "Authenticated account $id" ) if ( $opt{verbose} );
+    msg_exit( "Your account $id should now be authorised", 0 );
+}
+
+my ( $queue, $basedir, $settings );
+my $accounts = $cfg->get("/tweetq/accounts");
+if ( !$accounts ) {
+    show_usage("There are no accounts, you need to create one with auth option");
+}
+
+if ( !$opt{queue} && !$cfg->get('/tweetq/default') ) {
+    if ( scalar( @{$accounts} ) == 1 ) {
+        my $name = $accounts->[0]->{name};
+        $opt{queue} = $name;
+        $cfg->set( '/tweetq/default', $name );
+        $cfg->store();
+        debug( "INFO", "setting default account to $name" ) if ( $opt{verbose} );
+    }
+}
+$opt{queue} ||= $cfg->get('/tweetq/default');
+
+foreach my $acc ( @{$accounts} ) {
+    if ( $acc->{name} eq $opt{queue} ) {
+        $queue = $acc->{name};
+
+        # make sure we deref the accounts array item`
+        $settings = $acc;    #$cfg->get("/tweetq/accounts/$queue")->[0];
+    }
+}
+if ( !$queue ) {
+    show_usage("Could not match an account to $opt{queue}");
+}
+
+$basedir = $cfg->get("/tweetq/basedir") || '~';
+$settings->{file} ||= get_program . "_$queue.tweets";
+my $file = fix_filename( $basedir . '/' . $settings->{file} );
 
 msg_exit( "Could not find valid config in ~/.$program", 2 ) if ( !$queue || !$settings || !$file );
 
-if ( $opt{verbose} ) {
-    debug( "INFO", "Started" );
-}
+# update the config if it needs it
+$cfg->store();
 
 my $tweets;
 if ( -f $file ) {
@@ -145,19 +290,19 @@ if ( -f $file ) {
 # if we have a message then this should be added to the queue asap
 push @{$tweets}, $msg if ($msg);
 
-if( $opt{list}) {
-    say $_ foreach( @{$tweets}) ;
-    $action = 1 ;
+if ( $opt{list} ) {
+    say $_ foreach ( @{$tweets} );
+    $action = 1;
 }
 
 $nt = Net::Twitter::Lite::WithAPIv1_1->new(
-    consumer_key        => $settings->{consumer_key},
-    consumer_secret     => $settings->{consumer_secret},
+    consumer_key        => $cfg->get('/tweetq/consumer_key'),
+    consumer_secret     => $cfg->get('/tweetq/consumer_secret'),
     access_token        => $settings->{access_token},
     access_token_secret => $settings->{access_token_secret},
     ssl                 => 1,
     clientname          => $program,
-    useragent           => "$program/v$VERSION",
+    useragent           => "$program/v" . VERSION,
 );
 
 if ( $opt{all} ) {
