@@ -111,6 +111,7 @@ my %opt = init_app(
             desc    => 'tweet queue to process',
             default => "default",
         },
+        'list|l'    => 'list the items in the queue',
         'all|a' => 'publish all items in the queue'
     }
 );
@@ -143,6 +144,11 @@ if ( -f $file ) {
 
 # if we have a message then this should be added to the queue asap
 push @{$tweets}, $msg if ($msg);
+
+if( $opt{list}) {
+    say $_ foreach( @{$tweets}) ;
+    $action = 1 ;
+}
 
 $nt = Net::Twitter::Lite::WithAPIv1_1->new(
     consumer_key        => $settings->{consumer_key},
