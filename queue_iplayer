@@ -17,6 +17,9 @@
     add a radio show
     > queue_iplayer --type=radio In Our Time
 
+    list the current config
+    > queue_iplayer --list
+
     to get full help use
     > queue_iplayer --help   
 
@@ -28,7 +31,7 @@
       - hinterland
       - doctor who
       - sherlock
-     rado:
+    radio:
       - pratchett
       - The Infinite Monkey Cage
 
@@ -36,6 +39,10 @@
 
 Queue tv and radio shows to the iplayer pvr queue. Optionally add a new item
 to either of those lists
+
+#head1 See Also
+
+L<iplayer> has the ability to suggest and record previously downloaded shows
 
 =cut
 
@@ -47,18 +54,21 @@ use 5.10.0;
 use strict;
 use warnings;
 use POSIX qw(strftime);
+use Data::Printer ;
 use App::Basis;
 use App::Basis::Config;
 
 # -----------------------------------------------------------------------------
 
 my $IPLAYER_CMD = "$ENV{HOME}/bin/get_iplayer ";
+my $verbose ;
 
 # -----------------------------------------------------------------------------
 # basic debug to STDERR, redirect to anywhere you like
 
 sub other_debug {
     my ( $lvl, $debug ) = @_;
+    return if( !$verbose) ;
     if ( !$debug ) {
         $debug = $lvl;
 
@@ -83,13 +93,14 @@ my %opt = init_app(
             default  => 'tv',
             desc     => 'type of show to add [tv|radio]',
             validate => sub { my $val = shift; return $val =~ /tv|radio/i ; }
-        }
+        },
+        'list|l' => 'list the config (and exit)',
     }
 );
+$verbose = $opt{verbose} ;
+
 set_debug( \&other_debug );
-if ( $opt{verbose} ) {
-    debug( "INFO", "Started" );
-}
+debug( "INFO", "Started" );
 
 # lets have the config named after this program
 my $cfg = App::Basis::Config->new( filename => "$ENV{HOME}/.$program" );
@@ -109,6 +120,11 @@ if ($show) {
         $cfg->set( "/tv", $tv );
     }
     $cfg->store();
+}
+
+if( $opt{list}) {
+    say "Config\n======\n" . p($cfg->raw()) ;
+    exit( 0) ;
 }
 
 # first up we always add the scifi radio shows
