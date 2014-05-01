@@ -16,7 +16,7 @@ use App::Basis;
 
 # -----------------------------------------------------------------------------
 use constant ONE_DAY        => 24 * 60 * 60;
-use constant IPLAYER_SQLITE => 'dbi:SQLite:/home/kmulholland/.get_iplayer/iplayer.sqlite3';
+use constant IPLAYER_SQLITE => "dbi:SQLite:" . $ENV{HOME} . '/.get_iplayer/iplayer.sqlite3';
 use constant DB_UPDATE => 'get_iplayer_db' ;
 
 # -----------------------------------------------------------------------------
