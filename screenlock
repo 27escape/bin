@@ -1,0 +1,18 @@
+#!/bin/bash
+# quick script to do a screen lock or unlock
+# also changes color of my hypnocube
+
+cmd=$1
+
+if [ "$cmd" == "" -o "$cmd" == 'lock' ] ; then
+  cube 'sphere darkred ; update'
+  cinnamon-screensaver-command -l
+fi
+
+if [ "$cmd" == 'unlock' ] ; then
+  cube 'sphere darkgreen ; update'
+  cinnamon-screensaver-command -d
+fi
+
+
+
