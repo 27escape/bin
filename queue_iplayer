@@ -128,7 +128,7 @@ if( $opt{list}) {
 }
 
 # first up we always add the scifi radio shows
-my $command = $IPLAYER_CMD . '--type=radio --type=scifi --search=.* --pvr-queue';
+my $command = $IPLAYER_CMD . '--type=radio --category=scifi --search=.* --pvr-queue';
 debug( "INFO", "Adding scifi radio shows");
 my ( $ret, $out, $err ) = run_cmd($command);
 
