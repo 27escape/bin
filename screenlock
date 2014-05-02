@@ -5,12 +5,13 @@
 cmd=$1
 
 if [ "$cmd" == "" -o "$cmd" == 'lock' ] ; then
-  cube 'sphere darkred ; update'
+  cube sphere darkred : update
+  cube matrix darkred
   cinnamon-screensaver-command -l
 fi
 
 if [ "$cmd" == 'unlock' ] ; then
-  cube 'sphere darkgreen ; update'
+  cube sphere darkgreen : update
   cinnamon-screensaver-command -d
 fi
 
