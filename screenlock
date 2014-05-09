@@ -2,11 +2,16 @@
 # quick script to do a screen lock or unlock
 # also changes color of my hypnocube
 
+export PATH=/home/kmulholland/bin:/home/kmulholland/perl5/perlbrew/bin:/home/kmulholland/perl5/perlbrew/perls/perl-5.18.1/bin:/home/kmulholland/src:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin
+export PERL5LIB=/home/kmulholland/src/lib
+
 cmd=$1
+
+echo "SCREENLOCK $cmd" >> ~/blueproximity.log
 
 if [ "$cmd" == "" -o "$cmd" == 'lock' ] ; then
   cube sphere darkred : update
-  cube matrix darkred
+  # cube matrix darkred
   cinnamon-screensaver-command -l
 fi
 

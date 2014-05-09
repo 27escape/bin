@@ -24,7 +24,7 @@
 #
 #
 package main;
-my $version = 2.85;
+my $version = 2.86;
 my $version_text;
 $version_text = sprintf("v%.2f", $version) unless $version_text;
 #
@@ -51,8 +51,6 @@ $version_text = sprintf("v%.2f", $version) unless $version_text;
 # Known Issues:
 # * CAVEAT: The filenames and modes in the history are comma-separated if there was a multimode download. For now it just uses the first one.
 #
-
-use 5.14.0 ;
 use Env qw[@PATH];
 use Fcntl;
 use File::Copy;
@@ -70,7 +68,6 @@ use LWP::UserAgent;
 use POSIX qw(mkfifo);
 use POSIX qw(:termios_h);
 use strict;
-use utf8::all;
 #use warnings;
 use Time::Local;
 use URI;
@@ -565,6 +562,9 @@ foreach ('start', 'stop') {
 		$opt->{$_} = $1 * 3600 +  $2 * 60 + $4;
 	}
 }
+
+# set default thumbnail size in case thumbnail in cache is bad
+$opt->{thumbsize} = $opt->{thumbsize} || $opt->{thumbsizecache} || 150;
 
 # Add --search option to @search_args if specified
 if ( defined $opt->{search} ) {
@@ -3207,7 +3207,7 @@ sub usage {
 	my @man;
 	my @dump;
 	push @man, 
-		'.TH GET_IPLAYER "1" "November 2013" "Phil Lewis" "get_iplayer Manual"',
+		'.TH GET_IPLAYER "1" "April 2014" "Phil Lewis" "get_iplayer Manual"',
 		'.SH NAME', 'get_iplayer - Stream Recording tool and PVR for BBC iPlayer, BBC Podcasts and more',
 		'.SH SYNOPSIS',
 		'\fBget_iplayer\fR [<options>] [<regex|index> ...]',
@@ -5059,8 +5059,7 @@ sub download_thumbnail {
 
 	# Write to file
 	unlink($file);
-	open( my $fh, "> $file" );
-	binmode $fh;
+	open( my $fh, ">:raw", $file );
 	print $fh $image;
 	close $fh;
 
@@ -6950,7 +6949,11 @@ sub get_links {
 
 			# Default to 150px width thumbnail;
 			my $thumbsize = $opt->{thumbsizecache} || 150;
-
+			my $thumbnail = $1 if $entry =~ m{<media:thumbnail.*?url="(.*?)"};
+			my $suffix = Programme::bbciplayer->thumb_url_suffixes->{ $thumbsize };
+			if ( $thumbnail !~ /$suffix/ ) {
+				$thumbnail =~ s/_\d+_\d+\.jpg/$suffix/;
+			}
 			# build data structure
 			$prog->{$pid} = main::progclass($prog_type)->new(
 				'pid'		=> $pid,
@@ -6963,7 +6966,7 @@ sub get_links {
 				'guidance'	=> $guidance,
 				'available'	=> 'Unknown',
 				'duration'	=> 'Unknown',
-				'thumbnail'	=> "${thumbnail_prefix}/${pid}".Programme::bbciplayer->thumb_url_suffixes->{ $thumbsize },
+				'thumbnail'	=> $thumbnail,
 				'channel'	=> $channel,
 				'categories'	=> join(',', sort @category),
 				'type'		=> $prog_type,
@@ -7121,6 +7124,13 @@ sub get_links {
 
 					# Default to 150px width thumbnail;
 					my $thumbsize = $opt->{thumbsizecache} || 150;
+					my $thumbnail = $1 if $entry =~ m{<media:thumbnail.*?url="(.*?)"};
+					if ( $thumbnail ) {
+						my $suffix = Programme::bbciplayer->thumb_url_suffixes->{ $thumbsize };
+						if ( $thumbnail !~ /$suffix/ ) {
+							$thumbnail =~ s/_\d+_\d+\.jpg/$suffix/;
+						}
+					}
 
 					# Don't create this prog instance if the availablity is in the past 
 					# this prevents programmes which never appear in iPlayer from being indexed
@@ -7137,7 +7147,7 @@ sub get_links {
 						'desc'		=> $desc,
 						'available'	=> $available,
 						'duration'	=> $duration,
-						'thumbnail'	=> "${thumbnail_prefix}/${pid}".Programme::bbciplayer->thumb_url_suffixes->{ $thumbsize },
+						'thumbnail'	=> $thumbnail,
 						'channel'	=> $channel,
 						'type'		=> $prog_type,
 						'web'		=> "${bbc_prog_page_prefix}/${pid}.html",
@@ -7314,7 +7324,6 @@ sub download_subtitles {
 			unlink("$prog->{dir}/$prog->{fileprefix}.ttxt");
 			main::logger "INFO: 'Downloading Raw Subtitles to $prog->{dir}/$prog->{fileprefix}.ttxt'\n";
 			open( my $fhraw, "> $prog->{dir}/$prog->{fileprefix}.ttxt");
-			binmode $fhraw;
 			print $fhraw $subs;
 			close $fhraw;
 		}
@@ -9909,8 +9918,7 @@ sub tag_file_id3 {
 		# add artwork if available
 		if ( -f $meta->{thumbfile}  && ! $opt->{noartwork} ) {
 			my $data;
-			open(THUMB, $meta->{thumbfile});
-			binmode(THUMB);
+			open(THUMB, "<:raw", $meta->{thumbfile});
 			read(THUMB, $data, stat($meta->{thumbfile})->size());
 			close(THUMB);
 			$mp3->select_id3v2_frame_by_descr('APIC', $data);

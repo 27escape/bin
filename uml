@@ -2,7 +2,9 @@
 # run plantuml
 # moodfarm@cpan.org
 
-PLANTUML=~/bin/plantuml.jar
+# we assume that the plantuml.jar file is in the same directory as this executable
+EXEC_DIR=`dirname $0`
+PLANTUML="$EXEC_DIR/plantuml.jar"
 
 INPUT=$1
 OUPUT=$2
