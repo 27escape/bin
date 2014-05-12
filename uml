@@ -28,6 +28,10 @@ function show_usage  {
     exit $err
 }
 
+if [ ! -f $PLANTUML ] ; then 
+    show_usage "Could not find plantuml.jar, expecting it to be $PLANTUML" 2
+fi
+
 
 if [ "$INPUT" == "-help" ] ; then
     show_usage "" 0
