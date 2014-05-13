@@ -1,0 +1,32 @@
+#!/bin/bash
+# quick script to build the documentation and make a release
+
+# install locally
+dzil install
+if [ "$?" != "0" ] ; then
+  echo "Software is not building, cannot release"
+  exit 2
+fi
+
+echo " "
+
+if [ "README.md" -nt "docs/README.html" -o "README.md" -nt "docs/README.pdf" ] ; then
+  echo "Updating documentation"
+  ct2 README.md -o docs/README.html
+  ct2 README.md -p -o docs/README.pdf
+  git commit -m "Updating docs" docs/README.html docs/README.pdf
+fi
+
+git status |grep -q "nothing to commit"
+if [ "$?" != "0" ] ; then
+  echo "Cannot make a release as there are things outstanding from git"
+  exit 1
+fi
+
+# release to git
+git push -u origin master
+
+echo " "
+
+# and now to CPAN
+dzil release
