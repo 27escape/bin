@@ -10,11 +10,14 @@ fi
 
 echo " "
 
-if [ "README.md" -nt "docs/README.html" -o "README.md" -nt "docs/README.pdf" ] ; then
-  echo "Updating documentation"
-  ct2 README.md -o docs/README.html
-  ct2 README.md -p -o docs/README.pdf
-  git commit -m "Updating docs" docs/README.html docs/README.pdf
+# do documentation update if needed and we are creating docs
+if [ "README.md" -a -d docs ] ; then 
+  if [ "README.md" -nt "docs/README.html" -o "README.md" -nt "docs/README.pdf" ] ; then
+    echo "Updating documentation"
+    ct2 README.md -o docs/README.html
+    ct2 README.md -p -o docs/README.pdf
+    git commit -m "Updating docs" docs/README.html docs/README.pdf
+  fi
 fi
 
 git status |grep -q "nothing to commit"
