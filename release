@@ -23,6 +23,8 @@ fi
 git status |grep -q "nothing to commit"
 if [ "$?" != "0" ] ; then
   echo "Cannot make a release as there are things outstanding from git"
+  echo "" 
+  git status
   exit 1
 fi
 
