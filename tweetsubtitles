@@ -1,0 +1,93 @@
+#!/usr/bin/env perl
+# PODNAME: tweetsubtitles - simple script to get subtitles and post to twitter
+# ABSTRACT: tweet movie subtitles
+
+=head1 NAME
+
+tweetsubtitles
+
+=head1 SYNOPSIS
+
+    > tweetsubtitles ..options..
+
+    to get full help use
+    > tweetsubtitles --help   
+
+=head1 DESCRIPTION
+
+Slurps in a srt file and roughly parses it, nothing clever as I do not care about
+timing and stuff like that, as some of the subtitle files are abit rough they often
+may fail clean parsing.
+
+=cut
+
+#
+# (c) kevin mulholland, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+use 5.10.0;
+use strict;
+use warnings;
+use App::Basis;
+use App::Basis::Config;
+use Path::Tiny;
+use Data::Printer;
+
+my $twitter_cmd = 'tweetq -q SloMoMovies ';
+
+# -----------------------------------------------------------------------------
+
+sub tweetq {
+    my ($t) = @_;
+
+    run_cmd( $twitter_cmd . '"' . $t . '"' );
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text => "Post subtitles to my SloMoMovies twitter account",
+
+    # help_cmdline => "extra commandline args",
+    options => {
+        'file|f=s' => {
+            desc     => 'subtitle file to process',
+            required => 1,
+            validate => sub { my $f = shift; -f fix_filename($f); }
+        },
+        'hashtag=s' => {
+            required => 1,
+            desc     => 'hashtag',
+        }
+    }
+);
+$opt{hashtag} = "#$opt{hashtag}" if ( $opt{hashtag} !~ /^#/ );
+
+my @lines = path( $opt{file} )->lines_utf8;
+my @subtitles;
+for ( my $i = 0; $i < scalar(@lines); $i++ ) {
+    if ( $lines[$i] =~ /^\s?\d+\s?$/ && $lines[ $i + 1 ] =~ /^\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}\s?$/ ) {
+        $i += 2;
+        my $s = "";
+        while ( $lines[$i] !~ /^\s?$/ ) {
+            $s .= "\n" if ($s);
+            $s .= "$lines[$i]\n";
+            $i++;
+        }
+        $s =~ s/\r//gsm ;       # remove carridge returns
+        $s =~ s/\n$//sm;
+        $s =~ s/\n\n/\n/gsm;
+        $s =~ s/"/'/gsm;       # we cannot allow double qoutes
+        push @subtitles, $s;
+    }
+}
+my $hours = scalar(@subtitles);
+my $days  = int( $hours / 24 );
+tweetq("New movie $opt{hashtag}, will take $hours hours or $days days to complete, stand by...");
+
+#say "subtitles " .p( @subtitles) ;
+tweetq("$_ $opt{hashtag}") foreach @subtitles;
+
