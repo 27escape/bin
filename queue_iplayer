@@ -99,7 +99,7 @@ my %opt = init_app(
 );
 $verbose = $opt{verbose} ;
 
-set_debug( \&other_debug );
+# set_debug( \&other_debug );
 debug( "INFO", "Started" );
 
 # lets have the config named after this program
