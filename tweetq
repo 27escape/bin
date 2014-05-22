@@ -59,6 +59,7 @@ use Path::Tiny;
 use Try::Tiny;
 use App::Basis;
 use App::Basis::Config;
+use App::Basis::ConvertText2::UtfTransform ;
 use Data::Printer;
 
 # -----------------------------------------------------------------------------
@@ -77,16 +78,18 @@ my $program = get_program();
 # -----------------------------------------------------------------------------
 # publish a single tweet, returns 1 if successful
 sub publish {
-    my ( $tweet, $verbose ) = @_;
+    my ( $tweet, $verbose, $queue ) = @_;
     my $result;
 
+    # transform any italics and bold etc
+    $tweet = utf_transform( $tweet) ;
     try {
         debug( 'INFO', "sending $tweet" ) if ($verbose);
 
         $result = $nt->update($tweet) if ( !$testing );
     }
     catch {
-        debug( 'ERROR', "$_:  Could not send tweet - $tweet" );
+        debug( 'ERROR', "$_:  $queue : Could not send tweet - $tweet" );
     };
 
     return ( $result && $result->{created_at} ) ? 1 : 0;
@@ -172,21 +175,6 @@ sub authorise_account {
 }
 
 # -----------------------------------------------------------------------------
-# basic debug to STDERR, redirect to anywhere you like
-
-sub other_debug {
-    my ( $lvl, $debug ) = @_;
-    if ( !$debug ) {
-        $debug = $lvl;
-
-        # set a default level
-        $lvl = 'INFO';
-    }
-
-    say STDERR strftime( '%Y-%m-%d %H:%M:%S', gmtime( time() ) ) . " [$lvl] " . get_program() . " " . $debug;
-}
-
-# -----------------------------------------------------------------------------
 # main
 
 my $action;
@@ -208,8 +196,6 @@ my %opt = init_app(
         'all'    => 'publish all items in the queue'
     }
 );
-set_debug( \&other_debug );
-debug( "INFO", "Started" ) if ( $opt{verbose} );
 
 my $msg = join( ' ', @ARGV );
 if ( $msg && length($msg) > 140 ) {
@@ -233,14 +219,15 @@ You may need to create a twitter app, goto https://dev/twitter.com"
 
 # if we want to auth a new account
 if ( $opt{auth} ) {
-    debug( "INFO", "Attempting Authentication" ) if ( $opt{verbose} );
+    debug( "INFO", "$opt{queue}: Attempting Authentication" ) ;
 
     my $id = authorise_account($cfg);
     if ( !$id ) {
+        debug( "INFO", "$opt{queue}: Could not authorise" ) ;
         msg_exit("Could not authorise twitter account");
     }
 
-    debug( "INFO", "Authenticated account $id" ) if ( $opt{verbose} );
+    debug( "INFO", "$opt{queue}: Authenticated account $id" ) ;
     msg_exit( "Your account $id should now be authorised", 0 );
 }
 
@@ -310,7 +297,7 @@ if ( $opt{all} ) {
     my $result;
     my $break;
     while ( @{$tweets} && !$break ) {
-        if ( publish( $tweets->[0], $opt{verbose} ) ) {
+        if ( publish( $tweets->[0], $opt{verbose}, $queue ) ) {
 
             # remove top entry
             shift @{$tweets};
@@ -322,7 +309,7 @@ if ( $opt{all} ) {
 }
 elsif ( $opt{publish} ) {
     $action = 1;
-    if ( publish( $tweets->[0], $opt{verbose} ) ) {
+    if ( publish( $tweets->[0], $opt{verbose}, $queue ) ) {
 
         # remove top entry
         shift @{$tweets};

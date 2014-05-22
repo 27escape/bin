@@ -1,0 +1,160 @@
+#!/bin/bash
+# Creating a new git repo
+# repo repo-name -p/--perl adds perl specific files
+
+# ----------------------------------------------------------------------------
+# create the initial dist.ini file
+function dist_ini {
+    name=$1
+    lib=`echo $name | tr '-' '/'`
+    lib=lib/$lib.pm
+    year=`date "+%Y"`
+    echo "
+name    = $name
+author  = Kevin Mulholland <moodfarm@cpan.org>
+license = Perl_5
+copyright_holder = Kevin Mulholland
+copyright_year   = $year
+abstract = You need to add an abstract
+main_module = $lib
+version = 0.1.0
+
+[@Basic]
+
+[PkgVersion]
+
+; this needs to be early enough in the process to prepare the data before we
+; write any META files
+[Repository]
+
+[AutoPrereqs]
+
+[CPANFile]
+[Clean]" > dist.ini
+}
+
+# ----------------------------------------------------------------------------
+# create an initial test script
+function basic_test {
+    name=$1
+    echo "
+#!/usr/bin/perl -w
+
+=head1 NAME
+
+01_basic.t
+
+=head1 DESCRIPTION
+
+test App::Basis::ConvertText2::UtfTransform
+
+=head1 AUTHOR
+
+kevin mulholland, moodfarm@cpan.org
+
+=cut
+
+use v5.10;
+use strict;
+use warnings;
+use Test::More tests => 1;
+
+BEGIN { use_ok('App::Basis::ConvertText2::UtfTransform'); }
+" > t/01_basic.t
+}
+
+
+# ----------------------------------------------------------------------------
+# create initial perl module
+function perl_module {
+    name=$1
+    lib=`echo $name | tr '-' '/'`
+    lib=lib/$lib.pm
+    package=`echo $name | sed 's/-/::/g'`
+    dir=`dirname $lib`
+    mkdir -p $dir
+    object='$object'
+    echo "
+# ABSTRACT: 
+
+=head1 NAME
+
+$package
+
+=head1 SYNOPSIS
+
+    use 5.10.0 ;
+    use strict ;
+    use warnings ;
+    use $package;
+
+    my $object = $package->new() ;
+
+=head1 DESCRIPTION
+
+See Also 
+
+=cut
+
+package $package;
+
+use 5.014;
+use warnings;
+use strict;
+use Moo ;
+
+has basic => ( is => 'ro') ;
+
+# ----------------------------------------------------------------------------
+1;
+" > $lib
+}
+
+# ----------------------------------------------------------------------------
+# main
+
+start=$PWD
+PUBDIR=~/src/pub/
+# this is where I keep my public repos
+cd $PUBDIR
+
+name=$1
+
+if [ ! -d "$name" ] ; then
+    mkdir "$name"
+fi
+
+cd "$name"
+if [ ! -d .git ] ; then
+    echo $PWD
+
+    git init
+    git config user.name "Kevin Mulholland"
+    git config user.email moodfarm@cpan.org
+    # we never want build directories to be tracked
+    echo ".build" > .gitignore
+
+    DATE=`date --rfc-3339=date`
+    echo "0.0 $$DATE
+    * Created repo" > Changes
+    echo "# $name" > README.md
+
+    if [ "$2" == "-p" -o "$2" == "--perl" ] ; then
+      # create some dirs for perl
+      mkdir lib bin t
+      dist_ini $name
+      perl_module $name
+      basic_test $name
+      # git add lib bin t dist.ini
+      echo "    * Added perl bits" > Changes
+    fi
+
+    git add Changes README.md 
+    git commit -m "Initialising"
+    # use the hub command from http://hub.github.com/
+    hub create -d "$name"
+    git push origin -u master
+    echo "New repo created in $PUB/$name"
+else 
+    echo "Not creating a new repo on github, .git already exists"
+fi
