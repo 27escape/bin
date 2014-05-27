@@ -73,6 +73,8 @@ use Time::Local;
 use URI;
 use open qw(:utf8);
 
+binmode(STDOUT, ":utf8");
+
 my %SIGORIG;
 # Save default SIG actions
 $SIGORIG{$_} = $SIG{$_} for keys %SIG;
