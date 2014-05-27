@@ -1,0 +1,256 @@
+#!/usr/bin/env perl
+# PODNAME: dbox - reworking of https://github.com/kenkeiras/minibox
+# ABSTRACT: Reworking of minibox, using App::Basis and tidying things up
+
+=head1 NAME
+
+dbox
+
+=head1 SYNOPSIS
+
+    > dbox ..options..
+
+    to get full help use
+    > dbox --help   
+
+=head1 DESCRIPTION
+
+Description of what your application does
+
+=cut
+
+#
+# (c) Kevin Mulholland moodfarm@27escape.com
+# minibox (c) 2013 kenkeiras me@codigoparallevar.com
+# this code is released under the Perl Artistic License
+
+use 5.10.0;
+use strict;
+use warnings;
+use App::Basis;
+use App::Basis::Config;
+use Path::Tiny;
+use DateTime::Format::Strptime;
+use WebService::Dropbox;
+
+# use constant DEFAULT_BASEDIR => '~/Dropbox';
+use constant DEFAULT_BASEDIR => '/tmp/Dropbox';
+use constant DEFAULT_APP     => 'app key';
+use constant DEFAULT_SECRET  => 'app secret';
+use constant TIME_PATTERN    => '%A, %d %B %Y %T %z';
+
+# -----------------------------------------------------------------------------
+
+my $program = get_program();
+
+my %colors = (
+    delete  => "\x1b[0;91m",    # red - unused
+    add     => "\x1b[0;92m",    # green
+    modify  => "\x1b[0;93m",    # yellow
+    check   => "\x1b[0;94m",    # blue
+    magenta => "\x1b[0;95m",    # magenta - unused
+    upload  => "\x1b[0;96m",    # cyan
+    white   => "\x1b[0;97m",    # white - unused
+);
+
+# -----------------------------------------------------------------------------
+# print in color depending on an action
+sub cprint {
+    my ( $action, $msg ) = @_;
+    my $color_end = "\x1b[0m";
+
+    if ( $colors{$action} ) {
+        $msg = "$colors{$action}$msg$color_end";
+    }
+    say $msg ;
+}
+
+# -----------------------------------------------------------------------------
+# get the dropbox object
+
+sub get_dropbox {
+    my ($cfg) = @_;
+
+    my $dropbox = WebService::Dropbox->new(
+        {   key    => $cfg->get('/dbox/app_key'),
+            secret => $cfg->get('/dbox/app_secret')
+        }
+    );
+
+    if (   !$cfg->get('/dbox/access_token')
+        || !$cfg->get('/dbox/access_secret') )
+    {
+        my $url = $dropbox->login or die $dropbox->error;
+        say "Please Access URL $url\nPress Enter when have authorised the app";
+        <STDIN>;    # get 'Enter' and ignore it
+        $dropbox->auth or die $dropbox->error;
+
+        # save the tokens for next time
+        $cfg->set( '/dbox/access_token',  $dropbox->{access_token} );
+        $cfg->set( '/dbox/access_secret', $dropbox->{access_secret} );
+        $cfg->store();
+    }
+    else {
+        $dropbox->access_token( $cfg->get('/dbox/access_token') );
+        $dropbox->access_secret( $cfg->get('/dbox/access_secret') );
+    }
+
+    return $dropbox;
+}
+
+# -----------------------------------------------------------------------------
+# Pulls a directory or file from the Dropbox account.
+#
+# @param Dropbox interface.
+# @param Path to pull (defaults to '/').
+
+sub db_pull {
+    my ( $dropbox, $path, $data ) = @_;
+    $data ||= $dropbox->metadata($path) or die "Error requesting $path data";
+    state $timeparser = DateTime::Format::Strptime->new( pattern => TIME_PATTERN );
+
+    my $rel_path = $path;
+    $rel_path =~ s/^[\/\\]+//g;
+
+    if ( $data->{is_dir} ) {
+        cprint( 'check', "Checking $path" );
+
+        # Create the directory
+        path($rel_path)->mkpath if ( $rel_path ne '/' );
+
+        # Load metadata
+        $data = $dropbox->metadata($path) if ( !$data->{contents} );
+
+        # Repeat for each directory entry
+        my $contents = $data->{contents};
+        foreach my $detail (@$contents) {
+            if ( path( $detail->{path} )->basename ne '.metadata' ) {
+                # recuse to get next item
+                db_pull( $dropbox, $detail->{path}, $detail );
+            }
+        }
+    }
+    else {
+
+        # Compare the modification dates, download it only if it's needed.
+        my $fmodtime = $timeparser->parse_datetime( $data->{modified} )->epoch;
+        my $localmodtime = ( stat $rel_path )[9] || -1;
+
+        if ( $fmodtime > $localmodtime ) {
+            my $action = 'modify';
+            $action  = 'add' if ( $localmodtime == -1 );
+            cprint( $action, "Downloading $path [" . $data->{size} . "]" );
+
+            my $fh_get = IO::File->new( $rel_path, '>' );
+            $dropbox->files( $path, $fh_get ) or die $dropbox->error;
+            $fh_get->close;
+            utime( $fmodtime, $fmodtime, $rel_path );
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Pushes a directory or file to the Dropbox account.
+#
+# @param Dropbox interface.
+# @param Path to push (defaults to '/').
+
+sub db_push {
+    my ( $dropbox, $path ) = @_;
+    state $timeparser = DateTime::Format::Strptime->new( pattern => TIME_PATTERN );
+
+    # Path normalization
+    $path =~ s/^/\//;
+    $path =~ s/[\/\\]+/\//g;
+
+    my $rel_path = $path;
+    $rel_path =~ s/^[\/\\]+//g;
+
+    # Is a directory
+    if ( -d "./$rel_path" ) {
+        cprint( 'check', "Checking $path" );
+        $dropbox->create_folder("$path");
+
+        opendir( DIR, "./$rel_path" ) || die "Error reading ./$rel_path";
+        for my $entry ( grep { !/^\./ } readdir DIR ) {
+            # recurse to get check next item
+            db_push( $dropbox, "$path/$entry" );
+        }
+    }
+    else {
+        # Its a file
+        my $localmodtime = ( stat $rel_path )[9]       || -1;
+        my $data         = $dropbox->metadata("$path") || -1;
+        my $fmodtime     = -1;
+        if ( $data != -1 ) {
+            $fmodtime = $timeparser->parse_datetime( $data->{modified} )->epoch;
+        }
+
+        if ( $localmodtime > $fmodtime ) {
+            cprint( 'upload', "$path" );
+            my $fh_put = IO::File->new($rel_path);
+            $dropbox->files_put( $path, $fh_put ) or die $dropbox->error;
+            $fh_put->close;
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# get or build suitable config
+
+sub get_config {
+
+    # lets have the config named after this program
+    my $cfg = App::Basis::Config->new( filename => "~/.$program" );
+
+    if ( !$cfg->get('/dbox') || !$cfg->get('/dbox/basedir') ) {
+        $cfg->set( '/dbox/basedir', DEFAULT_BASEDIR );
+    }
+    $cfg->set( '/dbox/app_key',    DEFAULT_APP )    if ( !$cfg->get('/dbox/app_key') );
+    $cfg->set( '/dbox/app_secret', DEFAULT_SECRET ) if ( !$cfg->get('/dbox/app_secret') );
+    $cfg->store();
+
+    return $cfg;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my %opt = init_app(
+    help_text    => "Pull push files to your dropbox account",
+    help_cmdline => "list of files/folders",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'pull'      => 'Pull items from dropbox',
+        'push'      => 'push items to dropbox',
+    },
+);
+
+# debug will go into "~/$program.log" by default
+
+show_usage("Cannot have both push and pull options") if ( $opt{push}  && $opt{pull} );
+show_usage("Need either push or pull option")        if ( !$opt{push} && !$opt{pull} );
+
+# make sure we have some config
+my $cfg = get_config();
+if (   $cfg->get('/dbox/app_key') eq DEFAULT_APP
+    || $cfg->get('/dbox/app_secret') eq DEFAULT_SECRET )
+{
+    msg_exit(
+        "You need to edit your config and set your app key and secret\n
+You may need to create a dropbox app, goto https://www.dropbox.com/developers/apps/"
+    );
+}
+
+# load config and create the dropbox object
+my $dropbox = get_dropbox($cfg);
+
+# if we have no dir/file to play with, default to all
+push @ARGV, '/' if ( !scalar(@ARGV) );
+
+if ( $opt{pull} ) {
+    db_pull( $dropbox, $_ ) foreach @ARGV;
+}
+elsif ( $opt{push} ) {
+    db_push( $dropbox, $_ ) foreach @ARGV;
+}
