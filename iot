@@ -26,7 +26,7 @@ my %iot_feeds = (
     science    => 'http://downloads.bbc.co.uk/podcasts/radio4/iots/rss.xml',
 );
 
-my $target_dir = "~/Videos/IOT";
+my $target_dir = "~/googledrive/Shared_Audio/IOT/";
 
 # -----------------------------------------------------------------------------
 
