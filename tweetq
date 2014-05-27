@@ -213,7 +213,7 @@ if (   $cfg->get('/tweetq/consumer_key') eq DEFAULT_CONSUMER
 {
     msg_exit(
         "You need to edit your config and set your consumer key and secret\n
-You may need to create a twitter app, goto https://dev/twitter.com"
+You may need to create a twitter app, goto https://dev.twitter.com"
     );
 }
 
