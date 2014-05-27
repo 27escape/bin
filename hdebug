@@ -1,0 +1,16 @@
+#!/bin/sh
+# run a perl script under a debugger
+# moodfarm@cpan.org
+
+PORT=9876
+
+# for the perl tk debugger
+# perl -d:ptkdb $*
+
+# maybe look at Devel::Trepan and Devel::tkdb
+
+# for the web based debugger
+perl -d:hdb=port:$PORT $* &
+sleep 2
+# and open a webpage for it with your default browser
+x-www-browser http://localhost:$PORT
