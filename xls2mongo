@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/bin/env perl
 # script to extract a range of colums/rows from an excel spreadsheet
 # and present it as a sql insert statements, there is also the option to rotate the
 # output, the 1st row of the data MUST be the field headers strings, if it

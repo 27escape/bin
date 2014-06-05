@@ -1,11 +1,31 @@
 #!/bin/bash
 # quick script to build the documentation and make a release
 
+if [ ! -f dist.ini ] ; then
+  echo "You need to be in a directory with a dist.ini file"
+  exit 2
+fi
+
+if [ ! -f Changes ] ; then
+  echo "There is no Changes file"
+  exit 2  
+fi
+
 # install locally
 dzil install
 if [ "$?" != "0" ] ; then
   echo "Software is not building, cannot release"
   exit 2
+fi
+
+# work out if the Change file is up to date
+version=`grep 'version =' dist.ini |awk -F'=' '{print $2}'|tr -d ' '`
+change_date=`grep "^$version" Changes |awk '{print $2}'|tr -d ' '`
+
+# check to see if the version is dated
+if [ "$change_date" == "" ] ; then
+  echo "There is no date next to the version change $version"
+  exit 2    
 fi
 
 echo " "
@@ -35,3 +55,9 @@ echo " "
 
 # and now to CPAN
 dzil release
+
+# let the world know about it
+release=`grep name dist.ini |awk -F'=' '{print $2}'|tr -d ' '`
+cpan="http://search.cpan.org/~moodfarm/$release"
+github="https://github.com/27escape/$release"
+tweetq "New code release: github $github or CPAN $cpan"

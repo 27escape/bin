@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/bin/env perl
 # play with preadsheet::XML_to_XLS
 
 # kmulholland, v0.1, 2012-08-08 

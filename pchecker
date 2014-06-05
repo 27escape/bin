@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/bin/env perl
 # run a bunch of things in parallel and report via hypnocube
 # this app uses real unix forking, so effectively calls itself multiple times
 # moodfarm@cpan.org

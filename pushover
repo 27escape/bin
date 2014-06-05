@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!/bin/env perl
 #!/usr/bin/perl -w
 # use the pushover service to send messages to my tablet or phone
 # TODO limit message to 500 chars

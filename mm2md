@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/usr/bin/env perl
 # convert mindmap to markdown
 #
 # (c) kevin Mulholland 2013, moodfarm@cpan.org
@@ -7,14 +7,12 @@
 # v0.1 moodfarm@cpan.org, initial work
 
 use 5.12.0;
+
 # use feature state ;
 use strict;
 use App::Basis;
-use Data::Printer;
-
 use XML::Simple;
-use File::Slurp qw(write_file);
-
+use Path::Tiny;
 use constant CHANGE_POINT => 3;
 
 my $node_counter = 0;
@@ -29,6 +27,8 @@ sub node_info {
     if ( $node->{TEXT} ) {
         $out .= "\n" if ( $prefix =~ /#/ );
         $out .= "$prefix $node->{TEXT}\n";
+        $out .= "\n" if ( $prefix =~ /^#/ );
+
         # $out .= "\n" if ( $prefix =~ /#/ );
     }
 
@@ -38,7 +38,7 @@ sub node_info {
         if ( $node->{richcontent}->{html} ) {
             if ( ref( $node->{richcontent}->{html}{body}{p} ) eq 'ARRAY' ) {
                 foreach my $line ( @{ $node->{richcontent}->{html}{body}{p} } ) {
-                    next if ( !$line || ref( $line) eq 'HASH');
+                    next if ( !$line || ref($line) eq 'HASH' );
                     $notes .= "$line\n\n";
                 }
             }
@@ -50,8 +50,9 @@ sub node_info {
         }
         $notes =~ s/<\/?\w+>//;    # strip all html things
         if ( !$node_counter ) {
+
             # notes on the primary node may be special
-            my (@keywords) = ( $notes =~ /^(:.*?)$/gsm );
+            my (@keywords) = ( $notes =~ /^(\w+?:.*?)$/gsm );
             $header = join( "\n", @keywords );
             $notes =~ s/$header//;
             $out .= $notes;
@@ -71,11 +72,13 @@ sub node_info {
 }
 
 my $level = 0;
+
 # -----------------------------------------------------------------------------
 sub process_node {
     my $node = shift;
     my $mark;
     my $out = "";
+
     # hold the state over calls
     # state $level = 0 ;
 
@@ -92,6 +95,7 @@ sub process_node {
     if ( ref $node eq 'ARRAY' ) {
         foreach my $n (@$node) {
             $out .= node_info( $mark, $n );
+
             # recurse to process subnodes
             if ( $n->{node} ) {
                 $out .= process_node( $n->{node} );
@@ -99,6 +103,7 @@ sub process_node {
         }
     }
     elsif ( ref $node eq 'HASH' ) {
+
         # if trailing node just add it
         # recurse to process subnodes
         $out .= node_info( $mark, $node );
@@ -124,7 +129,7 @@ my %opt = init_app(
             desc     => 'mindmap filename',
             validate => sub {
                 my $file = shift;
-                $file =~ s/^~/$ENV{HOME}/;
+                $file = fix_filename($file);
                 -f $file && $file =~ /\.mm$/i;
             },
             required => 1,
@@ -133,10 +138,11 @@ my %opt = init_app(
     }
 );
 
-$opt{filename} =~ s/^~/$ENV{HOME}/;
+$opt{filename} = fix_filename( $opt{filename} );
 show_usage("Bad filename $opt{filename}") if ( !-f $opt{filename} );
 
 if ( !$opt{output} ) {
+
     # no output, so create filename with new extension
     $opt{output} = $opt{filename};
     $opt{output} =~ s/\.(.*?)$/.md/i;
@@ -155,4 +161,4 @@ $output .= process_node( $map->{node} );
 # prefix any special header notes
 $output = "$header\n$output" if ($header);
 
-write_file( $opt{output}, $output );
+path( $opt{output} )->spew_utf8($output);

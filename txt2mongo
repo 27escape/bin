@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/bin/env perl
 # convert a csv like text file into a mongodb
 # uses Parse::CSV to read the csv files in a line at a time, there is a
 # slight performance penalty here, but we use a lot less memory when processing

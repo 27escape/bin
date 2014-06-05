@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/bin/env perl
 # ldap-csvexport.pl -H ldap.inview.local -b o=inviewtechnology -u "uid=kmulholland,ou=Infrastructure,ou=users,o=inviewtechnology" -a "sn,givenname,manager,title,mail,mobile,telephoneNumber,ou" -p `cat ~/.ldap_password` 
 
 #############################################################################

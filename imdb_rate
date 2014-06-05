@@ -1,4 +1,4 @@
-#!/usr/bin/perl 
+#!/bin/env perl
 # v0.1 find movie files and get their rating from IMDB
 # moodfarm@cpan.org
 

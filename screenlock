@@ -5,6 +5,8 @@
 export PATH=/home/kmulholland/bin:/home/kmulholland/perl5/perlbrew/bin:/home/kmulholland/perl5/perlbrew/perls/perl-5.18.1/bin:/home/kmulholland/src:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin
 export PERL5LIB=/home/kmulholland/src/lib
 
+SPOTISTATUS='/tmp/spotifystatus'
+
 cmd=$1
 
 echo "SCREENLOCK $cmd" >> ~/blueproximity.log
@@ -12,12 +14,24 @@ echo "SCREENLOCK $cmd" >> ~/blueproximity.log
 if [ "$cmd" == "" -o "$cmd" == 'lock' ] ; then
   cube sphere darkred : update
   # cube matrix darkred
+  spoti=`spotify_cmd playstatus`
+  echo $spoti > $SPOTISTATUS
+
+  if [ "$spoti" == "Playing" ] ; then
+    spotify_cmd stop
+  fi
   cinnamon-screensaver-command -l
 fi
 
 if [ "$cmd" == 'unlock' ] ; then
   cube sphere darkgreen : update
   cinnamon-screensaver-command -d
+  spoti=`cat $SPOTISTATUS 2>/dev/null`
+  # restart the music if we had it stopped on lock
+  if [ "$spoti" == "Playing" ] ; then
+    spotify_cmd playpause
+    rm $SPOTISTATUS
+  fi
 fi
 
 

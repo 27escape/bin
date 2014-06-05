@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/bin/env perl
 # read a google mail account and perform some actions based on what it sees
 # moodfarm@cpan.org
 

@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/bin/env perl
 # v0.1 lower case all directory and filenames in a directory tree
 # v0.2 changed to do upper or lower and regexp replaces
 # moodfarm@cpan.org

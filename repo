@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/env perl
 # Creating a new git repo
 # repo repo-name -p/--perl adds perl specific files
 

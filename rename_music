@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/bin/env perl
 # rename some files
 # moodfarm@cpan.org
 

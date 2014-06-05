@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/bin/env perl
 # v0.1 2012-02-21 create nice charts from csv data
 # moodfarm@cpan.org
 

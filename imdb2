@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/bin/env perl
 # get film info from imdb
 # v0.2 switch to use App::Basis
 # moodfarm@cpan.org
