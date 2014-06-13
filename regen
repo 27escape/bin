@@ -1,0 +1,23 @@
+#!/bin/bash
+filepath="$1"
+
+echo "$filepath" |grep -Eq '\.md$'
+if [ "$?" == "0" ] ; then
+  # should we write it to a PDF dir
+  b=`dirname $filepath`
+  f=`basename $filepath .md`
+  PDF="$b/PDF"
+  DOC="$b/docs"
+  if [ -d "$PDF" ] ; then
+    OUTPUT="-o $PDF"
+  else
+    if [ -d "$DOC" ] ; then
+      OUTPUT="-o $DOC"
+    else
+      OUTPUT="$f.pdf"
+    fi
+  fi
+
+  OUT=`ct2 -p -c "$filepath" -v $OUTPUT`
+  echo "Procesed to $OUT"
+fi
