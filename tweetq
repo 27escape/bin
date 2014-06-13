@@ -59,7 +59,7 @@ use Path::Tiny;
 use Try::Tiny;
 use App::Basis;
 use App::Basis::Config;
-use App::Basis::ConvertText2::UtfTransform ;
+use App::Basis::ConvertText2::UtfTransform;
 use Data::Printer;
 
 # -----------------------------------------------------------------------------
@@ -67,13 +67,17 @@ use Data::Printer;
 use constant DEFAULT_BASEDIR  => '~';
 use constant DEFAULT_CONSUMER => 'consumer key';
 use constant DEFAULT_SECRET   => 'consumer secret';
-use constant VERSION          => '0.2';
+use constant VERSION          => '0.3';
+use constant TWEET_MAX        => 140;
 
 # -----------------------------------------------------------------------------
 
 my $nt;    # net twitter object - nasty global
 my $testing = 0;
 my $program = get_program();
+
+# URL parsing from https://metacpan.org/pod/URI
+my $valid_url = "(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?";
 
 # -----------------------------------------------------------------------------
 # publish a single tweet, returns 1 if successful
@@ -82,11 +86,28 @@ sub publish {
     my $result;
 
     # transform any italics and bold etc
-    $tweet = utf_transform( $tweet) ;
-    try {
-        debug( 'INFO', "sending $tweet" ) if ($verbose);
+    $tweet = utf_transform($tweet);
+    $tweet = utf_smilies($tweet);
 
-        $result = $nt->update($tweet) if ( !$testing );
+    # we may have to split the tweet into multiple lines if it is long
+    my @tweets;
+
+    my $tmptw = $tweet;
+
+    # twitter shortens urls to 19 characters
+    # $tmptw =~ s|https?|ftp|gopher|telnet|file|notes|ms-help):((//)|(\\\\))+[\w\d:#@%/;$()~_?\+-=\\\.&]*)|1234567890123456789|g ;
+    if ( length($tweet) <= TWEET_MAX ) {
+        push @tweets, $tweet;
+    }
+    else {
+
+    }
+
+    try {
+        foreach my $tw (@tweets) {
+            debug( 'INFO', "sending $tw" ) if ($verbose);
+            $result = $nt->update($tw) if ( !$testing );
+        }
     }
     catch {
         debug( 'ERROR', "$_:  $queue : Could not send tweet - $tweet" );
@@ -186,21 +207,16 @@ my %opt = init_app(
     options      => {
         'verbose|v' => 'Output useful information',
         'publish|p' => { desc => 'Publish top item in the queue', },
-        'queue|q=s' => {
-            desc => 'tweet queue to process',
-        },
-        'auth' => {
-            desc => 'Authenticate a new queue',
-        },
-        'list|l' => 'list the items in the queue',
-        'all'    => 'publish all items in the queue'
+        'queue|q=s' => { desc => 'tweet queue to process', },
+        'auth'      => { desc => 'Authenticate a new queue', },
+        'list|l'    => 'list the items in the queue',
+        'all'       => 'publish all items in the queue'
     }
 );
 
 my $msg = join( ' ', @ARGV );
 if ( $msg && length($msg) > 140 ) {
-    say STDERR "tweet too long, truncating";
-    $msg = substr( $msg, 0, 140 );
+    say STDERR "possibly long tweet, may get split on publication";
 }
 
 # lets have the config named after this program
@@ -219,15 +235,15 @@ You may need to create a twitter app, goto https://dev.twitter.com"
 
 # if we want to auth a new account
 if ( $opt{auth} ) {
-    debug( "INFO", "$opt{queue}: Attempting Authentication" ) ;
+    debug( "INFO", "$opt{queue}: Attempting Authentication" );
 
     my $id = authorise_account($cfg);
     if ( !$id ) {
-        debug( "INFO", "$opt{queue}: Could not authorise" ) ;
+        debug( "INFO", "$opt{queue}: Could not authorise" );
         msg_exit("Could not authorise twitter account");
     }
 
-    debug( "INFO", "$opt{queue}: Authenticated account $id" ) ;
+    debug( "INFO", "$opt{queue}: Authenticated account $id" );
     msg_exit( "Your account $id should now be authorised", 0 );
 }
 
@@ -307,7 +323,7 @@ if ( $opt{all} ) {
         }
     }
 }
-elsif ( $opt{publish} ) {
+elsif ( $opt{publish} && $tweets->[0] ) {
     $action = 1;
     if ( publish( $tweets->[0], $opt{verbose}, $queue ) ) {
 
