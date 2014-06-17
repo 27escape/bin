@@ -14,6 +14,10 @@ use Data::Printer;
 use XML::FeedPP;
 use Path::Tiny;
 use Furl;
+use utf8::all;
+# use open qw(:utf8);
+
+# binmode( STDOUT, ":utf8" );
 
 # -----------------------------------------------------------------------------
 
@@ -27,13 +31,6 @@ my %iot_feeds = (
 );
 
 my $target_dir = "~/googledrive/Shared_Audio/IOT/";
-
-# -----------------------------------------------------------------------------
-
-sub other_debug {
-    my $debug = shift;
-    say localtime() . " " . get_program() . " " . $debug;
-}
 
 # -----------------------------------------------------------------------------
 # main
@@ -55,54 +52,55 @@ my %opt = init_app(
 
 $opt{target} = fix_filename( $opt{target} );
 
+# remove any trailing /
+$opt{target} =~ s|/$||;
+
 path( $opt{target} )->mkpath if ( $opt{fetch} );
 
 msg_exit("Could not create $opt{target}") if ( !$opt{target} );
 
-set_debug( \&other_debug );
-
 if ( $opt{verbose} ) {
     my $prog = get_program();
-    debug("prog is '$prog'");
+    debug( 'INFO', "prog is '$prog'" );
 }
 
-my $count = 0;
-my $dlcount = 0 ;
+my $count   = 0;
+my $dlcount = 0;
 foreach my $name ( sort keys %iot_feeds ) {
-  my $source = $iot_feeds{$name} ;
+    my $source = $iot_feeds{$name};
 
-  my $dir = "$opt{target}/$name" ;
+    my $dir = "$opt{target}/$name";
 
     path($dir)->mkpath if ( $opt{fetch} );
 
-    my $feed = XML::FeedPP->new($source);
+    my $feed = XML::FeedPP->new($source, utf8_flag => 1);
     say "Title: " . $feed->title();
     foreach my $item ( $feed->get_item() ) {
         my $name = $item->title();
-        $name =~ s/^.*?:\s+(.*)/$1/ ;
-        $name =~ s/['"]//g;
+        $name =~ s/^.*?:\s+(.*)/$1/;
+        $name =~ s/['"’]//g;
         $name =~ s/\s/_/g;
-        $name .= ".mp3" ;
-        $name = lc( $name) ;
-        my $filename = "$dir/$name" ;
+        $name .= ".mp3";
+        $name = lc($name);
+        my $filename = "$dir/$name";
 
-        my $title = $item->title() ;
-        $title =~ s/^.*?:\s+(.*)/$1/ ;
+        my $title = $item->title();
+        $title =~ s/^.*?:\s+(.*)/$1/;
 
-        if ( $opt{fetch} && ! -f $filename) {
+        if ( $opt{fetch} && !-f $filename ) {
 
             my $furl = Furl->new(
                 agent   => 'IOT fetcher',
                 timeout => 10,
             );
 
-            my $res = $furl->get($item->link());
-            if( $res->is_success) {
-              path( "$filename")->spew_raw($res->content);
+            my $res = $furl->get( $item->link() );
+            if ( $res->is_success ) {
+                path("$filename")->spew_raw( $res->content );
             }
         }
-        $dlcount++ if (-f $filename) ;
-        say "       " .  ( -f $filename ? 'Y ' : 'N ') . $title ;
+        $dlcount++ if ( -f $filename );
+        say "       " . ( -f $filename ? 'Y ' : 'N ' ) . $title;
         $count++;
     }
 }
