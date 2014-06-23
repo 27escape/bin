@@ -27,6 +27,7 @@ rnd_copy
         -h, -?, --help     Show help
         -d, --dest         destination directory
         -n                 number of files to copy [DEFAULT: 1]
+        -l, --link         Create symlinks rather than copy
         -s, --src          Source directory of files
         -v, --verbose      Dump extra useful information
 
@@ -78,11 +79,11 @@ sub verbose {
 my $program = get_program();
 
 my %opt = init_app(
-    help_text => "Recursively copy a random number of files to another dir,\n" . 
-        "flatten to destination dir, files must have uniq names, not just uniq path\n" .
-        "maintains hidden list of copied files, so the destination does not need a full\n" .
-        "set of files",
-    options   => {
+    help_text => "Recursively copy a random number of files to another dir,\n"
+        . "flatten to destination dir, files must have uniq names, not just uniq path\n"
+        . "maintains hidden list of copied files, so the destination does not need a full\n"
+        . "set of files",
+    options => {
         'verbose|v' => 'Dump extra useful information',
         'n=i'       => {
             desc     => 'number of files to copy',
@@ -98,6 +99,7 @@ my %opt = init_app(
             desc     => 'destination directory',
             required => 1
         },
+        'link|l' => 'Create symlinks rather than copy files',
     }
 );
 
@@ -140,8 +142,14 @@ for ( my $i = 0; $i < $opt{n}; $i++ ) {
     # get a random filename
     my $r = int( rand($count) );
     my $f = $keys[$r];
-    verbose("Copying $src->{$f} -> $opt{dest}/$f");
-    path( $src->{$f} )->copy("$opt{dest}/$f");
+    if ( $opt{link} ) {
+        verbose("Linking $src->{$f} -> $opt{dest}/$f");
+        symlink( $src->{$f}, "$opt{dest}/$f" );
+    }
+    else {
+        verbose("Copying $src->{$f} -> $opt{dest}/$f");
+        path( $src->{$f} )->copy("$opt{dest}/$f");
+    }
 
     # keep track of this in the copyfile
     path($copyfile)->append("$f|$src->{$f}\n");
