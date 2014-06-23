@@ -145,7 +145,7 @@ if [ ! -d .git ] ; then
       dist_ini $name
       perl_module $name
       basic_test $name
-      # git add lib bin t dist.ini
+      git add  .gitignore dist.ini lib/ t/
       echo "    * Added perl bits" > Changes
     fi
 
