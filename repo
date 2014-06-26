@@ -37,7 +37,7 @@ version = 0.1.0
 # create an initial test script
 function basic_test {
     name=$1
-    echo "
+    package=`echo $name | sed 's/-/::/g'`    echo "
 #!/usr/bin/perl -w
 
 =head1 NAME
@@ -46,7 +46,7 @@ function basic_test {
 
 =head1 DESCRIPTION
 
-test App::Basis::ConvertText2::UtfTransform
+test module $package
 
 =head1 AUTHOR
 
@@ -59,7 +59,7 @@ use strict;
 use warnings;
 use Test::More tests => 1;
 
-BEGIN { use_ok('App::Basis::ConvertText2::UtfTransform'); }
+BEGIN { use_ok('$package'); }
 " > t/01_basic.t
 }
 
@@ -154,7 +154,7 @@ if [ ! -d .git ] ; then
     # use the hub command from http://hub.github.com/
     hub create -d "$name"
     git push origin -u master
-    echo "New repo created in $PUB/$name"
+    echo "New repo created in $PUBDIR/$name"
 else 
     echo "Not creating a new repo on github, .git already exists"
 fi
