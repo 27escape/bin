@@ -30,7 +30,12 @@ version = 0.1.0
 [AutoPrereqs]
 
 [CPANFile]
-[Clean]" > dist.ini
+[Clean]
+
+[MetaResources]
+repository = https://github.com/moodfarm/$name
+bugtracker = https://github.com/moodfarm/$name/issues
+" > dist.ini
 }
 
 # ----------------------------------------------------------------------------
