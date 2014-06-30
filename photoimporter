@@ -1,0 +1,123 @@
+#!/usr/bin/env perl
+# PODNAME: photoimporter - import photos from usb or SD card
+# ABSTRACT: import photos from usb or SD card
+
+=head1 NAME
+
+photoimporter
+
+=head1 SYNOPSIS
+
+    > photoimporter ..options..
+
+    to get full help use
+    > photoimporter --help   
+
+=head1 DESCRIPTION
+
+This must be run in a terminal under X windows, it expects that your OS will automount
+a USB drive or SD card to some directory under /media/$LOGIN/
+
+=cut
+
+#
+# (c) Kevin Mulholland, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+use 5.10.0;
+use strict;
+use warnings;
+use App::Basis;
+use Path::Tiny;
+use File::ChangeNotify;
+use Device::BlinkStick;
+use Data::Printer;
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text    => "Import photos",
+    help_cmdline => "",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'dest|d=s'  => { desc => 'Destination to copy photo files to', required => 1 },
+    },
+);
+
+$opt{dest} = fix_filename( $opt{dest} );
+path( $opt{dest} )->mkpath;
+
+msg_exit( "Could not create $opt{dest}", 2 ) if ( !-d $opt{dest} );
+
+if ( $opt{verbose} ) {
+    debug( "INFO", "Started" );
+}
+
+
+my $user = getlogin || getpwuid($<);
+my $watchdir = "/media/$user";
+my $file  = File::ChangeNotify->instantiate_watcher( directories => $watchdir );
+my $stick = Device::BlinkStick->new();
+
+while (1) {
+    $stick->set_color('darkgreen');
+    # now we can check if the file/dir has changed
+    my @changed = $file->wait_for_events();
+    $stick->set_color('maroon');
+
+    if ( scalar(@changed) ) {
+        my $count = 0;
+        foreach my $file (@changed) {
+            # the first thing that should be here is the media dir name
+            # lets check if this is one of our photo media devices and dump things if not
+            if ( !$count++ ) {
+                if ( !-f $file->path() . "/.photo" ) {
+                    say $file->path() . " does not have .photo";
+                    last;
+                }
+            }
+
+            # we only want to know when things have been created (due to the filesystem coming online)
+            next if ( $file->type() ne 'create' || !-f $file->path() );
+
+            # if we stringify we knoq we have a unix style path
+            my @parts = split( '/', path( $file->path() )->stringify() );
+            next if ( $parts[4] ne 'DCIM' );
+
+            next if ( $file->path() !~ /\.(jpg|jpg|png)$/i );
+
+            # now for the copy
+            my $dest = "$opt{dest}/" . join( '/', @parts[ 5, -1 ] );
+            if ( !-f $dest ) {
+                # flicker color while copying
+
+                # start the flickering thread
+
+                my $colors = ( $count & 1 ) ? 'darkorange' : 'orangered';
+                $stick->set_color($colors);
+                my $dir = path($dest)->dirname;
+                if ( !-d $dir ) {
+                    path($dir)->mkpath;
+                    if ( !-d $dir ) {
+                        say STDERR "Could not create destination dir $dir";
+                        next;
+                    }
+                }
+                path( $file->path() )->copy($dest);
+                #     # and print it
+
+                # and kill the flickering thread
+
+                # back to red when completed
+                $stick->set_color('maroon');
+            }
+        }
+    }
+    else {
+        debug( "INFO", "something happend but no changes found" );
+    }
+    $stick->set_color('black');
+}
