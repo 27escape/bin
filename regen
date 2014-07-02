@@ -8,8 +8,8 @@ function check_version() {
   version=`grep -E '^version: ' $fname | awk '{print $2}'`
   if [ "$version" != "" ] ; then
     grep -qE "^$version [0-9]{4}-[0-9]{2}-[0-9]{2}" $fname
-    if [ "$?" != "=" ] ; then
-      echo "ERROR: Could not find version number and release date"
+    if [ "$?" != "0" ] ; then
+      echo "ERROR: Could not match version number and release date"
     fi
   fi
 }
