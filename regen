@@ -5,9 +5,21 @@ filepath="$1"
 function check_version() {
   fname=$1
 
+  fdate=`grep -E '^date: ' $fname | awk '{print $2}'`
+  echo $fdate |grep -qE "[0-9]{4}-[0-9]{2}-[0-9]{2}"
+  if [ "$?" != "0" ] ; then
+    echo "ERROR: keyword date value does not seem to be valid"
+  fi
   version=`grep -E '^version: ' $fname | awk '{print $2}'`
+  vdate=`grep -E '^version: ' $fname | awk '{print $3}'`
+  echo $vdate |grep -qE "[0-9]{4}-[0-9]{2}-[0-9]{2}"
+  if [ "$?" != "0" ] ; then
+    echo "ERROR: version date part does not seem to be valid"
+  fi
+
   if [ "$version" != "" ] ; then
-    grep -qE "^$version [0-9]{4}-[0-9]{2}-[0-9]{2}" $fname
+    # grep -qE "^$version [0-9]{4}-[0-9]{2}-[0-9]{2}" $fname
+    grep -qE "^$version $fdate" $fname
     if [ "$?" != "0" ] ; then
       echo "ERROR: Could not match version number and release date"
     fi
@@ -31,10 +43,7 @@ if [ "$?" == "0" ] ; then
     fi
   fi
 
-
-
   check_version $filepath
-
 
   OUT=`ct2 -p -c "$filepath" -v $OUTPUT`
   echo "Procesed to $OUT"
