@@ -34,8 +34,8 @@ use Path::Tiny;
 use POSIX qw(ceil) ;
 use Data::Printer;
 
-# my $twitter_cmd = 'tweetq -q SloMoMovies ';
-my $twitter_cmd = 'tweetq -q mood_farm ';
+my $twitter_cmd = 'tweetq -q SloMoMovies ';
+# my $twitter_cmd = 'tweetq -q mood_farm ';
 
 # -----------------------------------------------------------------------------
 
