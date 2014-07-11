@@ -54,7 +54,7 @@ use strict;
 use warnings;
 use POSIX qw(strftime);
 use Net::Twitter::Lite::WithAPIv1_1;
-use YAML qw(LoadFile DumpFile);
+use YAML::XS qw(LoadFile DumpFile);
 use Path::Tiny;
 use Try::Tiny;
 use App::Basis;
@@ -77,7 +77,8 @@ my $testing = 0;
 my $program = get_program();
 
 # URL parsing from https://metacpan.org/pod/URI
-my $valid_url = "(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?";
+my $valid_url
+    = "(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?";
 
 # -----------------------------------------------------------------------------
 # publish a single tweet, returns 1 if successful
@@ -94,8 +95,8 @@ sub publish {
 
     my $tmptw = $tweet;
 
-    # twitter shortens urls to 19 characters
-    # $tmptw =~ s|https?|ftp|gopher|telnet|file|notes|ms-help):((//)|(\\\\))+[\w\d:#@%/;$()~_?\+-=\\\.&]*)|1234567890123456789|g ;
+# twitter shortens urls to 19 characters
+# $tmptw =~ s|https?|ftp|gopher|telnet|file|notes|ms-help):((//)|(\\\\))+[\w\d:#@%/;$()~_?\+-=\\\.&]*)|1234567890123456789|g ;
     if ( length($tweet) <= TWEET_MAX ) {
         push @tweets, $tweet;
     }
@@ -105,6 +106,10 @@ sub publish {
 
     try {
         foreach my $tw (@tweets) {
+
+            # lose leading space if there is a -, to get around issue of
+            # tweetq thinking a message starting with a minus is an option
+            $tw =~ s/^ -/-/gm;
             debug( 'INFO', "sending $tw" ) if ($verbose);
             $result = $nt->update($tw) if ( !$testing );
         }
@@ -125,8 +130,10 @@ sub create_default_config {
     if ( !$cfg->get('/tweetq') || !$cfg->get('/tweetq/basedir') ) {
         $cfg->set( '/tweetq/basedir', DEFAULT_BASEDIR );
     }
-    $cfg->set( '/tweetq/consumer_key',    DEFAULT_CONSUMER ) if ( !$cfg->get('/tweetq/consumer_key') );
-    $cfg->set( '/tweetq/consumer_secret', DEFAULT_SECRET )   if ( !$cfg->get('/tweetq/consumer_secret') );
+    $cfg->set( '/tweetq/consumer_key', DEFAULT_CONSUMER )
+        if ( !$cfg->get('/tweetq/consumer_key') );
+    $cfg->set( '/tweetq/consumer_secret', DEFAULT_SECRET )
+        if ( !$cfg->get('/tweetq/consumer_secret') );
 
     $cfg->store();
 }
@@ -157,7 +164,8 @@ sub authorise_account {
     if ( !$twit->authorized ) {
 
         # The client is not yet authorized: Do it now
-        print "Authorize this app at ", $twit->get_authorization_url, "\nand enter the PIN: ";
+        print "Authorize this app at ", $twit->get_authorization_url,
+            "\nand enter the PIN: ";
 
         my $pin = <STDIN>;    # wait for input
         chomp $pin;
@@ -167,7 +175,8 @@ sub authorise_account {
 
     if (@creds) {
         my ( $new, $offset );
-        ( $access_token, $access_token_secret, $user_id, $screen_name ) = @creds;
+        ( $access_token, $access_token_secret, $user_id, $screen_name )
+            = @creds;
 
         # find this entry or point to the end
         foreach my $acc ( @{$accounts} ) {
@@ -201,7 +210,8 @@ sub authorise_account {
 my $action;
 
 my %opt = init_app(
-    help_text => "Simple script to queue twitter messages for later publication
+    help_text =>
+        "Simple script to queue twitter messages for later publication
         use perldoc $program to get the setup for the ~/.$program config file",
     help_cmdline => "twitter message to send",
     options      => {
@@ -220,7 +230,10 @@ if ( $msg && length($msg) > 140 ) {
 }
 
 # lets have the config named after this program
-my $cfg = App::Basis::Config->new( filename => "$ENV{HOME}/.$program", die_on_error => 1 );
+my $cfg = App::Basis::Config->new(
+    filename     => "$ENV{HOME}/.$program",
+    die_on_error => 1
+);
 
 create_default_config($cfg);
 
@@ -250,7 +263,8 @@ if ( $opt{auth} ) {
 my ( $queue, $basedir, $settings );
 my $accounts = $cfg->get("/tweetq/accounts");
 if ( !$accounts ) {
-    show_usage("There are no accounts, you need to create one with auth option");
+    show_usage(
+        "There are no accounts, you need to create one with auth option");
 }
 
 if ( !$opt{queue} && !$cfg->get('/tweetq/default') ) {
@@ -259,7 +273,8 @@ if ( !$opt{queue} && !$cfg->get('/tweetq/default') ) {
         $opt{queue} = $name;
         $cfg->set( '/tweetq/default', $name );
         $cfg->store();
-        debug( "INFO", "setting default account to $name" ) if ( $opt{verbose} );
+        debug( "INFO", "setting default account to $name" )
+            if ( $opt{verbose} );
     }
 }
 $opt{queue} ||= $cfg->get('/tweetq/default');
@@ -280,7 +295,8 @@ $basedir = $cfg->get("/tweetq/basedir") || '~';
 $settings->{file} ||= get_program . "_$queue.tweets";
 my $file = fix_filename( $basedir . '/' . $settings->{file} );
 
-msg_exit( "Could not find valid config in ~/.$program", 2 ) if ( !$queue || !$settings || !$file );
+msg_exit( "Could not find valid config in ~/.$program", 2 )
+    if ( !$queue || !$settings || !$file );
 
 # update the config if it needs it
 $cfg->store();
