@@ -31,9 +31,11 @@ use warnings;
 use App::Basis;
 use App::Basis::Config;
 use Path::Tiny;
+use POSIX qw(ceil) ;
 use Data::Printer;
 
-my $twitter_cmd = 'tweetq -q SloMoMovies ';
+# my $twitter_cmd = 'tweetq -q SloMoMovies ';
+my $twitter_cmd = 'tweetq -q mood_farm ';
 
 # -----------------------------------------------------------------------------
 
@@ -69,25 +71,38 @@ $opt{hashtag} = "#$opt{hashtag}" if ( $opt{hashtag} !~ /^#/ );
 my @lines = path( $opt{file} )->lines_utf8;
 my @subtitles;
 for ( my $i = 0; $i < scalar(@lines); $i++ ) {
-    if ( $lines[$i] =~ /^\s?\d+\s?$/ && $lines[ $i + 1 ] =~ /^\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}\s?$/ ) {
+    if (   $lines[$i] =~ /^\s?\d+\s?$/
+        && $lines[ $i + 1 ]
+        =~ /^\d{2}:\d{2}:\d{2}[\.,]\d{3} --> \d{2}:\d{2}:\d{2}[\.,]\d{3}\s?$/
+        )
+    {
         $i += 2;
         my $s = "";
-        while ( $lines[$i] !~ /^\s?$/ ) {
+        while ( $lines[$i] && $lines[$i] !~ /^\s?$/ ) {
             $s .= "\n" if ($s);
             $s .= "$lines[$i]\n";
             $i++;
         }
-        $s =~ s/\r//gsm ;       # remove carridge returns
+        $s =~ s/\r//gsm;       # remove carridge returns
         $s =~ s/\n$//sm;
         $s =~ s/\n\n/\n/gsm;
-        $s =~ s/"/'/gsm;       # we cannot allow double qoutes
+        $s =~ s/\n\n/\n/gsm;
+        $s =~ s/"/'/gsm;       # we cannot allow double quotes
+        $s =~ s/^-/ -/gsm ;    # if lines start with -, tweetq will think they are options
         push @subtitles, $s;
     }
 }
-my $hours = scalar(@subtitles);
-my $days  = int( $hours / 24 );
-tweetq("New movie $opt{hashtag}, will take $hours hours or $days days to complete, stand by...");
+if (@subtitles) {
+    my $hours = scalar(@subtitles);
+    my $days  = ceil( $hours / 24 );
+    tweetq(
+        "New movie $opt{hashtag}, will take $hours hours or about $days days to complete, stand by..."
+    );
 
-#say "subtitles " .p( @subtitles) ;
-tweetq("$_ $opt{hashtag}") foreach @subtitles;
+    #say "subtitles " .p( @subtitles) ;
+    tweetq("$_ $opt{hashtag}") foreach @subtitles;
 
+}
+else {
+    say STDERR "Could not find any things that looked like subtitles";
+}
