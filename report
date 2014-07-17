@@ -13,8 +13,9 @@ use App::Basis;
 use Data::Printer;
 use Try::Tiny;
 use POSIX qw(strftime);
-use Date::Manip ;
-use JSON::Tiny ;
+use Date::Manip;
+use JSON::Tiny;
+
 # this is our db schema and stuff
 use Record::Schema;
 
@@ -38,10 +39,12 @@ sub other_debug {
 
 sub create_table_if_not_exists {
     my ( $schema, $table ) = @_;
-    # check if we have data in the table, an exception will mean no table hopefully
+
+# check if we have data in the table, an exception will mean no table hopefully
     try {
         # attempt to read a single result from the table
-        my $rs = $schema->resultset($table)->search( {}, { rows => 1 } )->single();
+        my $rs = $schema->resultset($table)->search( {}, { rows => 1 } )
+            ->single();
     }
     catch {
         # create the table from our schema as we think it does not exist
@@ -52,9 +55,9 @@ sub create_table_if_not_exists {
 # -----------------------------------------------------------------------------
 
 sub create_datetime {
-    my $datestr = shift ;
-    my $date = new Date::Manip::Date;
-    $date->parse( $datestr );
+    my $datestr = shift;
+    my $date    = new Date::Manip::Date;
+    $date->parse($datestr);
     my $day;
     {
         # if we get a warning about converting the date to a day, there
@@ -67,7 +70,7 @@ sub create_datetime {
     my $d = $date->printf("%Y-%m-%d");
     my $t = $date->printf("%T");
 
-    return "$d $t" ;
+    return "$d $t";
 }
 
 # -----------------------------------------------------------------------------
@@ -76,7 +79,8 @@ sub create_datetime {
 my $program = get_program();
 
 my %opt = init_app(
-    help_text => "Query the data in our simple recording system, produce CSV output
+    help_text =>
+        "Query the data in our simple recording system, produce CSV output
 
 $program --period='2012-01-01,2013-12-12' --buckets='hour'",
     help_cmdline => "name_of_thing",
@@ -87,15 +91,21 @@ $program --period='2012-01-01,2013-12-12' --buckets='hour'",
             default => $DEFAULT_DB,
         },
         'period|p=s' => {
-            default => "1970-01-01 00:00:00," . strftime( "%Y-%m-%d %H:%M:%S", localtime( time() ) ),
-            desc    => 'date range to query',
-            validate => sub { my $val = shift ; return $val =~ /,/;}
+            default => "1970-01-01 00:00:00,"
+                . strftime( "%Y-%m-%d %H:%M:%S", localtime( time() ) ),
+            desc     => 'date range to query',
+            validate => sub { my $val = shift; return $val =~ /,/; }
         },
         'buckets|b=s' => {
-            desc    => 'group the data into datetime buckets from ' . join( ', ', @bucket_list ),
-            default => $bucket_list[0],
-            validate => sub { my $val = shift; return scalar( grep( /$val/i, @bucket_list ) ); }
+            desc => 'group the data into datetime buckets from '
+                . join( ', ', @bucket_list ),
+            default  => $bucket_list[0],
+            validate => sub {
+                my $val = shift;
+                return scalar( grep( /$val/i, @bucket_list ) );
+                }
         },
+        'items|i' => 'list the field names (items)',
         'debug=i' => { desc => 'level of debugging required', default => 0 },
     }
 );
@@ -109,7 +119,7 @@ if ( $opt{verbose} ) {
 }
 
 my ($thing) = @ARGV;
-show_usage("Missing thing to query against") if ( !$thing );
+show_usage("Missing thing to query against") if ( !$thing && !$opt{items});
 
 $opt{db} =~ s/^~/$ENV{HOME}/;
 
@@ -120,11 +130,32 @@ show_usage("Invalid DB file") if ( !$schema );
 # check if there is the correct table and create if needed
 create_table_if_not_exists( $schema, $DB_TABLE );
 
-try {
-    my ( $from, $to ) = split( /,/, $opt{period});
+if ( $opt{items} ) {
 
-    $from = create_datetime( $from) ;
-    $to = create_datetime( $to) ;
+    try {
+        my $rs = $schema->resultset('Record')->search(
+            { },
+            {   columns  => [qw/item/],
+                distinct => 1,
+                order_by => 'item ASC',
+            }
+        );
+        while ( my $row = $rs->next ) {
+            say "  " . $row->item;
+        }
+    }
+    catch {
+        say "DB issue";
+    } ;
+
+    exit;
+}
+
+try {
+    my ( $from, $to ) = split( /,/, $opt{period} );
+
+    $from = create_datetime($from);
+    $to   = create_datetime($to);
 
     # reporting
     # should output CSV data
@@ -137,41 +168,41 @@ try {
 
     # because we have already linked the Record and Tag classes, we do
     # not need to do any special joins
-    my $rs = $schema->resultset('Record')->search( 
-        { 'item' => $thing, 'datetime' => { '>=' => $from, "<=" => $to } }, 
-        { 
+    my $rs = $schema->resultset('Record')->search(
+        { 'item' => $thing, 'datetime' => { '>=' => $from, "<=" => $to } },
+        {
             # join => 'tags',
             # '+select' => ['tags.tag_name', 'tags.tag_value'],
             # '+as' => ['tag', 'tag_value']
-        } );
-
-    say join( ',',  qw(id datetime item value tags)) ; ;
-    my $json  = JSON::Tiny->new;
-    while (my $row = $rs->next) {
-        my @tags ;
-        print  join( ',',  $row->id, $row->datetime, $row->item, $row->value) . "," ;
-        # get the linked tags, there are not many so we can just grab an array
-        my @linked_tags = $row->tags ;
-        foreach my $t ( @linked_tags) {
-            push @tags, $t->tag_name . "=" . $t->tag_value ;
         }
+    );
+
+    say join( ',', qw(id datetime item value tags) );
+    my $json = JSON::Tiny->new;
+    while ( my $row = $rs->next ) {
+        my @tags;
+        print join( ',', $row->id, $row->datetime, $row->item, $row->value )
+            . ",";
+
+        # get the linked tags, there are not many so we can just grab an array
+        my @linked_tags = $row->tags;
+        foreach my $t (@linked_tags) {
+            push @tags, $t->tag_name . "=" . $t->tag_value;
+        }
+
         # as we are dumping to CSV we need to doublequote the doublequotes
-        my $js = $json->encode( \@tags) ;
-        $js =~ s/"/""/g ;
-        say ( @tags ? '"' . $js . '"' : "") ; 
+        my $js = $json->encode( \@tags );
+        $js =~ s/"/""/g;
+        say( @tags ? '"' . $js . '"' : "" );
     }
 
 }
 catch {
     # log the actual issue for the developer
     debug($_);
+
     # remove the at line thing for user data
     s/at .*? line.*//;
     say "Error $_";
 };
-
-
-
-
-
 
