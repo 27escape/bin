@@ -1,0 +1,7 @@
+#!/bin/bash
+# get log of skype messages
+
+# this is your skype account name
+SKYPE_ID=kevmul1
+
+sqlite3 ~/.Skype/$SKYPE_ID/main.db 'SELECT convo_id, author, body_xml FROM messages ORDER BY convo_id, timestamp ;'
