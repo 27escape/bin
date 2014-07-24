@@ -119,7 +119,7 @@ if ( $opt{verbose} ) {
 }
 
 my ($thing) = @ARGV;
-show_usage("Missing thing to query against") if ( !$thing && !$opt{items});
+show_usage("Missing thing to query against") if ( !$thing && !$opt{items} );
 
 $opt{db} =~ s/^~/$ENV{HOME}/;
 
@@ -134,19 +134,20 @@ if ( $opt{items} ) {
 
     try {
         my $rs = $schema->resultset('Record')->search(
-            { },
+            {},
             {   columns  => [qw/item/],
                 distinct => 1,
                 order_by => 'item ASC',
             }
         );
+        say "Fields used:";
         while ( my $row = $rs->next ) {
             say "  " . $row->item;
         }
     }
     catch {
         say "DB issue";
-    } ;
+    };
 
     exit;
 }
