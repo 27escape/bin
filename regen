@@ -1,6 +1,35 @@
 #!/bin/bash
-filepath="$1"
 
+function usage() {
+  echo "
+  usage: $0 option 
+
+  regenerate markdown document into PDF
+
+  OPTIONS:
+    -h    this help
+    -e    will launch evince to preview it
+
+"
+}
+
+# process command line args
+
+while getopts “he” OPTION
+do
+  case $OPTION in
+    h) usage
+      exit 1
+      ;;
+    e) LAUNCH="evince "
+      # remove used argument
+      shift
+      ;;
+  esac
+done
+
+filepath="$1"
+echo "file $filepath"
 
 function check_version() {
   fname=$1
@@ -47,5 +76,9 @@ if [ "$?" == "0" ] ; then
   check_version $filepath
 
   OUT=`ct2 -p -c "$filepath" -v $OUTPUT`
-  echo "Procesed to $OUT"
+  if [ "$LAUNCH" != "" ] ; then
+    $LAUNCH $OUT
+  else
+    echo "Procesed to $OUT"
+  fi
 fi
