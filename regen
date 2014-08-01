@@ -41,13 +41,13 @@ function check_version() {
   fi
 
   version=`grep -E '^version: ' $fname | awk '{print $2}'`
-  vdate=`grep -E "^$version " $fname | awk '{print $2}'`
-  echo $vdate |grep -qE "[0-9]{4}-[0-9]{2}-[0-9]{2}"
-  if [ "$?" != "0" ] ; then
-    echo "ERROR: version date part does not seem to be valid"
-  fi
-
   if [ "$version" != "" ] ; then
+    vdate=`grep -E "^$version " $fname | awk '{print $2}'`
+    echo $vdate |grep -qE "[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    if [ "$?" != "0" ] ; then
+      echo "ERROR: version date part does not seem to be valid"
+    fi
+
     # grep -qE "^$version [0-9]{4}-[0-9]{2}-[0-9]{2}" $fname
     grep -qE "^$version $fdate" $fname
     if [ "$?" != "0" ] ; then
@@ -77,7 +77,7 @@ if [ "$?" == "0" ] ; then
 
   OUT=`ct2 -p -c "$filepath" -v $OUTPUT`
   if [ "$LAUNCH" != "" ] ; then
-    $LAUNCH $OUT
+    $LAUNCH $OUT &
   else
     echo "Procesed to $OUT"
   fi
