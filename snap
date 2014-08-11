@@ -1,0 +1,114 @@
+#!/usr/bin/env perl
+# PODNAME: snap - snapshot a copy of a directory into another, using rsync
+# ABSTRACT: Easy rsync 2 directories
+
+=head1 NAME
+
+snap
+
+=head1 SYNOPSIS
+
+    > snap src destination
+
+    to get full help use
+    > snap --help   
+
+=head1 DESCRIPTION
+
+Snapshot a copy of a directory into another, using rsync
+making sure that the name of the src is not the name of the dest, 
+so we do not copy into subdirs etc, will delete files not in src 
+from destination
+
+=cut
+
+#
+# (c) kevin mulholland, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+use 5.18.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+use Path::Tiny ;
+
+# delete files not in src
+# -a archive mode
+# -u skip files on dest that are newer
+# -S sparse
+# --copy-links symlinks are “collapsed” by copying
+my $rsync = "rsync -au -S --copy-links" ;
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+    help_text => "snapshot a copy of a directory into another, using rsync",
+    help_cmdline => "src destination",
+    options      => {
+        'verbose|v'  => 'Dump extra useful information',
+        'quiet|q'    => 'Quiet mode',
+        'progress|p' => 'Show progress',
+        'dryrun|n'     => 'Perform dryrun do not copy files'
+    },
+) ;
+
+# tag on verbose if needed
+$rsync .= $opt{verbose} ? ' -v ' : ' -q ' ;
+$rsync .= ' --progress ' if ( $opt{progress} ) ;
+$rsync .= ' --dry-run ' if ( $opt{dryrun} ) ;
+
+my $src  = fix_filename( $ARGV[0] ) ;
+my $dest = fix_filename( $ARGV[1] ) ;
+$src =~ s|/$|| ;
+$dest =~ s|/$|| ;
+
+show_usage("src not provided")               if ( !$src ) ;
+show_usage("src ($src) is not a directory")        if ( !-d $src ) ;
+show_usage("destination not provided")       if ( !$dest ) ;
+show_usage("destination ($dest) is not a directory") if ( -e $dest && !-d $dest ) ;
+
+# if we are pointing the dest to have the same name as the src then we need to
+# move it up a level
+if ( path($src)->basename eq path($dest)->basename ) {
+    $dest = path($dest)->parent->stringify ;
+    say "destitination now $dest" ;
+} else {
+    # as the base name does not exist, we will create it as the target
+    $dest .= '/' . path($src)->basename ;
+    # say "adding src destitination now $dest" ;
+}
+# create the destination if needed
+if ( !-d $dest ) {
+    path($dest)->mkpath ;
+}
+
+# make sure we are copying the directory contents
+$src .= '/' ;
+# rsync to dest, delete files on dest that should not be there
+my $cmd = "$rsync --delete $src $dest" ;
+say "copy to $cmd" if ( $opt{verbose} ) ;
+
+system($cmd) ;
+if ($?) {
+    say STDERR "Error ($?) during rsync" ;
+}
+
+# rsync back from dest any new files, we do not use the delete option
+# add src dir name to dest (now src)
+# and remove it from src (now dest)
+my $base = path($src)->basename ;
+$dest .= '/' . $base if( $dest !~ /$base$/) ;
+# make sure we are copying the directory contents
+$dest .= '/' ;
+# $src = path($src)->parent->stringify . "/" ;
+
+$cmd = "$rsync $dest $src" ;
+say "copy back $cmd" if ( $opt{verbose} ) ;
+system($cmd) ;
+if ($?) {
+    say STDERR "Error ($?) during rsync back" ;
+}
+
