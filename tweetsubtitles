@@ -25,84 +25,89 @@ may fail clean parsing.
 # (c) kevin mulholland, moodfarm@cpan.org
 # this code is released under the Perl Artistic License
 
-use 5.10.0;
-use strict;
-use warnings;
-use App::Basis;
-use App::Basis::Config;
-use Path::Tiny;
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+use App::Basis::Config ;
+use Path::Tiny ;
 use POSIX qw(ceil) ;
-use Data::Printer;
+use Data::Printer ;
 
-my $twitter_cmd = 'tweetq -q SloMoMovies ';
-# my $twitter_cmd = 'tweetq -q mood_farm ';
+my $QUEUE = "SloMoMovies" ;
+
+my $twitter_cmd = 'tweetq' ;
 
 # -----------------------------------------------------------------------------
 
-sub tweetq {
-    my ($t) = @_;
+sub tweetq
+{
+    my ( $q, $t ) = @_ ;
 
-    run_cmd( $twitter_cmd . '"' . $t . '"' );
+    run_cmd("$twitter_cmd -q '$q' \"$t\"") ;
 }
 
 # -----------------------------------------------------------------------------
 # main
 
-my $program = get_program();
+my $program = get_program() ;
 
 my %opt = init_app(
-    help_text => "Post subtitles to my SloMoMovies twitter account",
+    help_text => "Post movie subtitles to a twitter account",
 
     # help_cmdline => "extra commandline args",
     options => {
         'file|f=s' => {
             desc     => 'subtitle file to process',
             required => 1,
-            validate => sub { my $f = shift; -f fix_filename($f); }
+            validate => sub { my $f = shift ; -f fix_filename($f) ; }
         },
         'hashtag=s' => {
             required => 1,
             desc     => 'hashtag',
+        },
+        'queue|q=s' => {
+            desc    => 'Queue to use',
+            default => $QUEUE,
         }
     }
-);
-$opt{hashtag} = "#$opt{hashtag}" if ( $opt{hashtag} !~ /^#/ );
+) ;
+$opt{hashtag} = "#$opt{hashtag}" if ( $opt{hashtag} !~ /^#/ ) ;
 
-my @lines = path( $opt{file} )->lines_utf8;
-my @subtitles;
+my @lines = path( $opt{file} )->lines_utf8 ;
+my @subtitles ;
 for ( my $i = 0; $i < scalar(@lines); $i++ ) {
     if (   $lines[$i] =~ /^\s?\d+\s?$/
         && $lines[ $i + 1 ]
         =~ /^\d{2}:\d{2}:\d{2}[\.,]\d{3} --> \d{2}:\d{2}:\d{2}[\.,]\d{3}\s?$/
-        )
-    {
-        $i += 2;
-        my $s = "";
+        ) {
+        $i += 2 ;
+        my $s = "" ;
         while ( $lines[$i] && $lines[$i] !~ /^\s?$/ ) {
-            $s .= "\n" if ($s);
-            $s .= "$lines[$i]\n";
-            $i++;
+            $s .= "\n" if ($s) ;
+            $s .= "$lines[$i]\n" ;
+            $i++ ;
         }
-        $s =~ s/\r//gsm;       # remove carridge returns
-        $s =~ s/\n$//sm;
-        $s =~ s/\n\n/\n/gsm;
-        $s =~ s/\n\n/\n/gsm;
-        $s =~ s/"/'/gsm;       # we cannot allow double quotes
-        $s =~ s/^-/ -/gsm ;    # if lines start with -, tweetq will think they are options
-        push @subtitles, $s;
+        $s =~ s/\r//gsm ;       # remove carridge returns
+        $s =~ s/\n$//sm ;
+        $s =~ s/\n\n/\n/gsm ;
+        $s =~ s/\n\n/\n/gsm ;
+        $s =~ s/"/'/gsm ;       # we cannot allow double quotes
+        $s =~ s/^-/ -/gsm
+            ;    # if lines start with -, tweetq will think they are options
+        push @subtitles, $s ;
     }
 }
 if (@subtitles) {
-    my $hours = scalar(@subtitles);
-    my $days  = ceil( $hours / 24 );
-    tweetq(
+    my $hours = scalar(@subtitles) ;
+    my $days  = ceil( $hours / 24 ) ;
+    tweetq( $opt{queue},
         "New movie $opt{hashtag}, will take $hours hours or about $days days to complete, stand by..."
-    );
+    ) ;
 
     #say "subtitles " .p( @subtitles) ;
-    tweetq("$_ $opt{hashtag}") foreach @subtitles;
+    tweetq( $opt{queue}, "$_ $opt{hashtag}" ) foreach @subtitles ;
 
-}
-else {
-    say STDERR "Could not find any things that looked like subtitles";
+} else {
+    say STDERR "Could not find any things that looked like subtitles" ;
 }
