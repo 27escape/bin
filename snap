@@ -45,30 +45,33 @@ my $rsync = "rsync -au -S --copy-links" ;
 my $program = get_program() ;
 
 my %opt = init_app(
-    help_text => "snapshot a copy of a directory into another, using rsync",
+    help_text => "Snapshot a copy of a directory into another, using rsync.
+Newer files on the destination are not overwritten",
     help_cmdline => "src destination",
     options      => {
         'verbose|v'  => 'Dump extra useful information',
         'quiet|q'    => 'Quiet mode',
         'progress|p' => 'Show progress',
-        'dryrun|n'     => 'Perform dryrun do not copy files'
+        'dryrun|n'   => 'Perform dryrun do not copy files',
+        'back|b'     => 'copy back any changed files'
     },
 ) ;
 
 # tag on verbose if needed
 $rsync .= $opt{verbose} ? ' -v ' : ' -q ' ;
 $rsync .= ' --progress ' if ( $opt{progress} ) ;
-$rsync .= ' --dry-run ' if ( $opt{dryrun} ) ;
+$rsync .= ' --dry-run '  if ( $opt{dryrun} ) ;
 
 my $src  = fix_filename( $ARGV[0] ) ;
 my $dest = fix_filename( $ARGV[1] ) ;
-$src =~ s|/$|| ;
-$dest =~ s|/$|| ;
+$src  =~ s|/$|| if( $src);
+$dest =~ s|/$|| if( $dest);
 
-show_usage("src not provided")               if ( !$src ) ;
-show_usage("src ($src) is not a directory")        if ( !-d $src ) ;
-show_usage("destination not provided")       if ( !$dest ) ;
-show_usage("destination ($dest) is not a directory") if ( -e $dest && !-d $dest ) ;
+show_usage("src not provided")              if ( !$src ) ;
+show_usage("src ($src) is not a directory") if ( !-d $src ) ;
+show_usage("destination not provided")      if ( !$dest ) ;
+show_usage("destination ($dest) is not a directory")
+    if ( -e $dest && !-d $dest ) ;
 
 # if we are pointing the dest to have the same name as the src then we need to
 # move it up a level
@@ -96,19 +99,20 @@ if ($?) {
     say STDERR "Error ($?) during rsync" ;
 }
 
-# rsync back from dest any new files, we do not use the delete option
-# add src dir name to dest (now src)
-# and remove it from src (now dest)
-my $base = path($src)->basename ;
-$dest .= '/' . $base if( $dest !~ /$base$/) ;
-# make sure we are copying the directory contents
-$dest .= '/' ;
-# $src = path($src)->parent->stringify . "/" ;
+if ( $opt{back} ) {
+    # rsync back from dest any new files, we do not use the delete option
+    # add src dir name to dest (now src)
+    # and remove it from src (now dest)
+    my $base = path($src)->basename ;
+    $dest .= '/' . $base if ( $dest !~ /$base$/ ) ;
+    # make sure we are copying the directory contents
+    $dest .= '/' ;
+    # $src = path($src)->parent->stringify . "/" ;
 
-$cmd = "$rsync $dest $src" ;
-say "copy back $cmd" if ( $opt{verbose} ) ;
-system($cmd) ;
-if ($?) {
-    say STDERR "Error ($?) during rsync back" ;
+    $cmd = "$rsync $dest $src" ;
+    say "copy back $cmd" if ( $opt{verbose} ) ;
+    system($cmd) ;
+    if ($?) {
+        say STDERR "Error ($?) during rsync back" ;
+    }
 }
-
