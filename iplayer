@@ -171,6 +171,7 @@ my $orm = Iplayer::Schema->connect( IPLAYER_SQLITE, "", "" );
 
 if ( $opt{suggest} ) {
 
+    my $msg = "Adding Suggestions:\n";
     # record list is a view of things in history vs things on tv with matching names
     # SELECT DISTINCT _index FROM record_list ;
     my @ids = $orm->resultset('RecordList')->search(
@@ -183,11 +184,15 @@ if ( $opt{suggest} ) {
     say "Suggestions: ";
     foreach my $id (@ids) {
         say "\t" . $id->_index . ": " . $id->name;
+        if( $opt{fetch}) {
+            $msg .= $id->_index . ": " . $id->name . "\n" ;
+        }
 
         # only fetch suggestions if we are asked to
         $suggest .= " " . $id->_index if ( $opt{fetch} );
     }
     $done = 1 if( !$opt{fetch}) ;
+    debug( "INFO", $msg) if( $opt{fetch}) ;
 }
 
 my $command = $IPLAYER_CMD;
