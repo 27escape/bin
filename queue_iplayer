@@ -131,6 +131,7 @@ if( $opt{list}) {
 my $command = $IPLAYER_CMD . '--type=radio --category=scifi --search=.* --pvr-queue';
 debug( "INFO", "Adding scifi radio shows");
 my ( $ret, $out, $err ) = run_cmd($command);
+debug( "INFO", "result: $out") ;
 
 # do the tv shows
 my $queue;
@@ -138,6 +139,7 @@ map { $queue .= '"' . $_ . '" ' } @{$tv};
 $command = $IPLAYER_CMD . "--type=tv --pvr-queue $queue ";
 debug( "INFO", "Adding tv shows: $queue");
 ( $ret, $out, $err ) = run_cmd($command);
+debug( "INFO", "result: $out") ;
 
 # do the radio shows
 $queue = "";    # reset the queue
@@ -145,3 +147,4 @@ map { $queue .= '"' . $_ . '" '  } @{$radio};
 $command = $IPLAYER_CMD . "--type=radio --pvr-queue $queue ";
 debug( "INFO", "Adding radio shows: $queue");
 ( $ret, $out, $err ) = run_cmd($command);
+debug( "INFO", "result: $out") ;
