@@ -1,0 +1,95 @@
+#!/usr/bin/env perl
+# PODNAME: td2pdf - convert a plaintasks file into a PDF
+# ABSTRACT: convert a plaintasks file into a PDF, using markdown and my ct2 and regen scripts
+
+=head1 NAME
+
+td2pdf
+
+=head1 SYNOPSIS
+
+    > td2pdf ..options..
+
+    to get full help use
+    > td2pdf --help   
+
+=head1 DESCRIPTION
+
+
+
+=cut
+
+#
+# (c) kevin mulholland, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+use 5.10.0 ;
+use strict;
+use warnings;
+use App::Basis;
+use Path::Tiny ;
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text    => "convert a plaintasks file into a PDF, using markdown and my ct2 and regen scripts",
+    help_cmdline => "plaintasks_file",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+    },
+    #log_file => "your-logfile",
+);
+
+my $td = $ARGV[0] ;
+show_usage( "You need to pass a filename") if( !$td) ;
+$td = fix_filename( $td) ;
+show_usage( "You need to pass a valid filename") if( ! -f$td) ;
+
+my $outfile = $td ;
+$outfile =~ s/\.td$/.md/i ;
+
+my $data = path( $td)->slurp_utf8() ;
+
+my $outdata = "" ;
+
+# ordering of replacements is important!
+foreach my $line( split( /\n/, $data)) {
+    $line =~ s|^(#)+ |$1# | ;
+    $line =~ s|^(\w.*?):|## $1| ;
+    $line =~ s|^:(\w+) |$1: | ;
+    # replace standard bullets with gray ones
+    $line =~ s|^\*\s+(.*)|* <span style='color:gray;font-style:italic'>$1</span>|;
+
+    $line =~ s|^\[ \]\s+(.*)|* <span style='color:black'>$1</span>|;
+    $line =~ s|^\[x\]\s+(.*)|* <span style='color:green'>$1</span>|;
+    $line =~ s|^\[+\]\s+(.*)|* <span style='color:green'>$1</span>|;
+    $line =~ s|^\[-\]\s+(.*)|* <span style='color:red'>$1</span>|;
+    
+    # this is crap coding, but I cannot quickly figure out how to accomodate an empty $1
+    $line =~ s|^(\s+)\*\s+(.*)|$1* <span style='color:gray;font-style:italic'>$2</span>|;
+
+    $line =~ s|^(\s+)\[ \]\s+(.*)|$1* <span style='color:black'>$2</span>|;
+    $line =~ s|^(\s+)\[+\]\s+(.*)|$1* <span style='color:green'>$2</span>|;
+    $line =~ s|^(\s+)\[-\]\s+(.*)|$1* <span style='color:red'>$2</span>|;
+
+    $line =~ s|(\(\d+[dwm]\))|**$1**|g ;
+    $line =~ s|(\@\w+)|<span style='border: 1px solid goldenrod;background-color:cornsilk;'>&nbsp;$1 &nbsp;</span>|g ;
+    
+    $outdata .= "$line\n" ;
+}
+
+path( $outfile)->spew_utf8( $outdata) ;
+my ($code, $out, $err) =run_cmd( "regen $outfile") ;
+if( $opt{verbose}) {
+    say $out ;
+}
+if( $err) {
+    say "$err" ;
+} else {
+    # remove the intermediate markdown file
+    unlink $outfile ;
+}
+
