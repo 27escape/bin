@@ -72,6 +72,7 @@ foreach my $line( split( /\n/, $data)) {
     $line =~ s|^(\s+)\*\s+(.*)|$1* <span style='color:gray;font-style:italic'>$2</span>|;
 
     $line =~ s|^(\s+)\[ \]\s+(.*)|$1* <span style='color:black'>$2</span>|;
+    $line =~ s|^(\s+)\[x\]\s+(.*)|$1* <span style='color:green'>$2</span>|;
     $line =~ s|^(\s+)\[+\]\s+(.*)|$1* <span style='color:green'>$2</span>|;
     $line =~ s|^(\s+)\[-\]\s+(.*)|$1* <span style='color:red'>$2</span>|;
 
