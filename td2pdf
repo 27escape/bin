@@ -66,7 +66,7 @@ foreach my $line( split( /\n/, $data)) {
     $line =~ s|^\[ \]\s+(.*)|* <span style='color:black'>$1</span>|;
     $line =~ s|^\[x\]\s+(.*)|* <span style='color:green'>$1</span>|;
     $line =~ s|^\[+\]\s+(.*)|* <span style='color:green'>$1</span>|;
-    $line =~ s|^\[-\]\s+(.*)|* <span style='color:red'>$1</span>|;
+    $line =~ s|^\[-\]\s+(.*)|* <span style='color:#ff3300;text-decoration: line-through;'>$1</span>|;
     
     # this is crap coding, but I cannot quickly figure out how to accomodate an empty $1
     $line =~ s|^(\s+)\*\s+(.*)|$1* <span style='color:gray;font-style:italic'>$2</span>|;
@@ -74,9 +74,10 @@ foreach my $line( split( /\n/, $data)) {
     $line =~ s|^(\s+)\[ \]\s+(.*)|$1* <span style='color:black'>$2</span>|;
     $line =~ s|^(\s+)\[x\]\s+(.*)|$1* <span style='color:green'>$2</span>|;
     $line =~ s|^(\s+)\[+\]\s+(.*)|$1* <span style='color:green'>$2</span>|;
-    $line =~ s|^(\s+)\[-\]\s+(.*)|$1* <span style='color:red'>$2</span>|;
+    $line =~ s|^(\s+)\[-\]\s+(.*)|$1* <span style='color:#ff3300;text-decoration: line-through;'>$2</span>|;
 
     $line =~ s|(\(\d+[dwm]\))|**$1**|g ;
+    $line =~ s/\@(done|started|lasted)\s?\(/$1(/g ;
     $line =~ s|(\@\w+)|<span style='border: 1px solid goldenrod;background-color:cornsilk;'>&nbsp;$1 &nbsp;</span>|g ;
     
     $outdata .= "$line\n" ;
