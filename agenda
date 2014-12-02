@@ -1,0 +1,6 @@
+#!/bin/bash
+# display a 5 day agenda based on my google calendar
+# use daily from cron
+
+msg=$(gcalcli --nocolor --nostarted agenda)
+notify-send -u critical 'Agenda' "$msg"

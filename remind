@@ -1,0 +1,5 @@
+#!/bin/bash
+# get reminders about work things
+# uses notify-send
+
+gcalcli --calendar Work remind
