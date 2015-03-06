@@ -1,0 +1,30 @@
+#!/bin/bash
+# update_chron
+# update the crontab if the master crontab file has changed
+
+LOG=/tmp/cron.$USER
+MASTER_CRON=~/Dropbox/Inview/crontab
+echo $DATE >> $LOG
+if [ "$1" ] ; then
+    MASTER_CRON="$1"
+fi
+
+if [ -f $MASTER_CRON ] ; then
+    CURRENT=/tmp/cron.$USER.$$
+
+    crontab -l > $CURRENT
+    diff $MASTER_CRON $CURRENT > /dev/null
+    # check if cron has changed 
+    if [ "$?" == "1" ] ; then
+        # update the cron from the master
+        date >>$LOG
+        echo "    updating cron from $MASTER_CRON" >> $LOG
+        crontab $MASTER_CRON
+    fi
+
+    # and clean up
+    rm $CURRENT 2>/dev/null
+fi
+
+
+

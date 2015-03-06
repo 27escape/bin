@@ -1,0 +1,117 @@
+#!/usr/bin/env perl
+# PODNAME: tempcheck - simple script to check system temperature, nagios style outputs
+# ABSTRACT: check system temperature, nagios style outputs
+
+# see http://www.cyberciti.biz/tips/howto-monitor-hard-drive-temperature.html
+
+=head1 NAME
+
+tempcheck
+
+=head1 SYNOPSIS
+
+    > tempcheck ..options..
+
+    to get full help use
+    > tempcheck --help   
+
+=head1 DESCRIPTION
+
+check system temperature, nagios style outputs
+
+requires lm-sensors installed and configured with sensors-detect
+requires hddtemp, this also requires root user access, if we do not have root 
+access then the hd temp will not be checked
+
+
+> sensors
+radeon-pci-0100
+Adapter: PCI adapter
+temp1:        +55.5°C  (crit = +120.0°C, hyst = +90.0°C)
+
+coretemp-isa-0000
+Adapter: ISA adapter
+Core 0:       +33.0°C  (high = +89.0°C, crit = +105.0°C)
+Core 2:       +33.0°C  (high = +89.0°C, crit = +105.0°C)
+
+we should consider hyst the same as high and this is a warning state, obviously
+crit or above is critical
+
+
+> sudo hddtemp /dev/sda
+/dev/sda: ST500DM002-1BD142: 38°C
+
+For HD anything over 45 is warning and over 55 is critical
+
+=cut
+
+#
+# (c) kevin mulholland, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+
+my %status_codes = (
+    0 => 'OK',
+    1 => 'WARNING',
+    2 => 'CRITICAL',
+    3 => 'UNKNOWN'
+) ;
+
+
+my %status = (
+    code => 0,
+    msg  => "",
+    perf => ""
+) ;
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+    help_text => "Check system temperature",
+    # help_cmdline => "",
+    options => { 'verbose|v' => 'Dump extra useful information', },
+) ;
+
+say STDERR "checking sensors" if ( $opt{verbose} ) ;
+
+my ( $err_code, $out, $err ) = run_cmd('sensors') ;
+
+if ( !$err_code ) {
+    say "out is $out" ;
+} else {
+    say STDERR "sensors error ($err_code) $err" ;
+}
+
+say STDERR "checking hddtemp" if ( $opt{verbose} ) ;
+# get the list of drives then check the temp on all of them
+( $err_code, $out, $err ) = run_cmd('mount') ;
+if ( !$err_code ) {
+    my %drives ;
+    foreach my $d ( grep ( /^\/dev\/[sh]/, split( /\n/, $out ) ) ) {
+        $d =~ s/(^\/dev\/[sh].*?)\d.*/$1/ ;
+        say "found drive $d" ;
+        $drives{$d} = $d ;
+    }
+
+    foreach my $d ( sort keys %drives ) {
+        ( $err_code, $out, $err ) = run_cmd("sudo hddtemp $d") ;
+        if ( !$err_code ) {
+        } else {
+            say STDERR "hddtemp error ($err_code) $err" ;
+        }
+    }
+
+} else {
+    say STDERR "mount error ($err_code) $err" ;
+}
+
+
+say "status = $status_codes{$status{code}}:$status{msg}|$status{perf}" ;
+exit $status{code} ;

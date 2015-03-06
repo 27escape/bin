@@ -8,6 +8,7 @@ use strict;
 use warnings;
 
 use App::Basis;
+use App::Basis::Config;
 use Geo::IP;
 use DateTime;
 use DateTime::TimeZone;

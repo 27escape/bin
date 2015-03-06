@@ -79,5 +79,9 @@ filenotify { id => 'markdown', dir => $opt{dir}, filter => qr/.md$/i } => \&conv
 # setup our dir watcher for mindmaps
 filenotify { id => 'mindmap', dir => $opt{dir}, filter => qr/.mm$/i } => \&convert_mindmap;
 
+# setup our dir watcher for project PlainTasks
+filenotify { id => 'plaintasks', dir => $opt{dir}, filter => qr/.td$/i } => \&convert_mindmap;
+
+
 # wait for stuff to happen
 happens;

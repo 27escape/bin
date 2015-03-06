@@ -1,0 +1,108 @@
+#!/usr/bin/env perl 
+# convert mindmap files into markdown and then
+# convert markdown or plaintasks files into PDF
+# (c) author moodfarm@cpan.org
+# license: same as perl
+# date 2015-03-03
+
+use 5.14.0;
+use strict;
+use warnings;
+
+use When::Happens;
+use When::Happens::FileNotify;
+
+my $verbose = 0 ;
+
+# -----------------------------------------------------------------------------
+# These functions are called when files are changed in our watched dir
+
+# -----------------------------------------------------------------------------
+# convert markdown using my regen script
+
+sub convert_markdown {
+    my ($params, $changed) = @_ ;
+
+    foreach my $o (@$changed) {
+        # we can only process files
+        next if( !-f $o->path()) ;
+        next if ( $o->type() !~ /modify|create/ );
+        # we don't want to process deletes etc
+        my $filename = $o->path();
+        run "regen '$filename'";
+        say "converted '$filename' to PDF" if( $verbose);
+    }
+}
+
+# -----------------------------------------------------------------------------
+# convert plaintasks (.td) files using my td2pdf script
+
+sub convert_plaintasks {
+    my ($params, $changed) = @_ ;
+
+    foreach my $o (@$changed) {
+        # we can only process files
+        next if( !-f $o->path()) ;
+        next if ( $o->type() !~ /modify|create/ );
+        # we don't want to process deletes etc
+        my $filename = $o->path();
+        run "td2pdf '$filename'";
+        say "converted '$filename' to PDF" if( $verbose);
+    }
+}
+
+# -----------------------------------------------------------------------------
+# convert mindmap (freemind/freeplain) files using my mm2md script, this
+# creates a markdown file, which will then trigger convert_markdown
+
+sub convert_mindmap {
+    my ($params, $changed) = @_ ;
+
+    foreach my $o (@$changed) {
+        # we can only process files
+        next if( !-f $o->path()) ;
+        # we don't want to process deletes etc
+        next if ( $o->type() !~ /modify|create/ );
+
+        my $filename = $o->path();
+
+        my $newfile = $filename;
+        # make sure we have a new name
+        $newfile =~ s/\.md$/.odt/i;
+        run "mm2md --filename='$newfile'";
+        say "converted '$filename' from a mindmap" if( $verbose);
+    }
+}
+
+# -----------------------------------------------------------------------------
+
+my %opt = init_happens(
+    help_text => 'Convert mindmap, markdown and plaintasks files toPDF on directory file changes. Only files ending in .td, .md or .mm will converted.',
+    options   => {
+        "dir|d=s" => {
+            desc     => 'directory to monitor for file changes',
+            required => 1
+        },
+        "daemon" => 'Run in the background as a daemon',
+        "verbose|v" => 'Be verbose',
+    },
+);
+
+# start happens stuff and do command line
+init_happens(%opt);
+
+$opt{dir} =~ s/^~/$ENV{HOME}/ ;
+# setup our global verbose
+$verbose = $opt{verbose} ;
+
+# setup our dir watcher for markdownfiles
+filenotify { id => 'markdown', dir => $opt{dir}, filter => qr/.md$/i } => \&convert_markdown;
+
+# setup our dir watcher for mindmaps
+filenotify { id => 'mindmap', dir => $opt{dir}, filter => qr/.mm$/i } => \&convert_mindmap;
+
+# setup our dir watcher for project PlainTasks
+filenotify { id => 'plaintasks', dir => $opt{dir}, filter => qr/.td$/i } => \&convert_plaintasks;
+
+# wait for stuff to happen
+happens;

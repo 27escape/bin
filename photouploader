@@ -1,0 +1,142 @@
+#!/usr/bin/env perl
+# PODNAME: photouploader - upload photos from fir to wedding website
+# ABSTRACT: photouploader
+
+=head1 NAME
+
+photouploader
+
+=head1 SYNOPSIS
+
+    > photouploader ..options..
+
+    to get full help use
+    > photouploader --help   
+
+=head1 DESCRIPTION
+
+This must be run in a terminal under X windows, it expects that your OS will automount
+a USB drive or SD card to some directory under /media/$LOGIN/
+
+=cut
+
+#
+# (c) Kevin Mulholland, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+use File::ChangeNotify ;
+use Data::Printer ;
+use Path::Tiny ;
+use JSON::XS ;
+use Furl ;
+use HTTP::Request::Common ;
+
+my $furl = Furl->new(
+    agent   => get_program() . "/1.0",
+    timeout => 10,
+) ;
+
+# my $UPLOAD_URL = "http://wedding.27escape.com/thebigday/upload" ;
+my $UPLOAD_URL = "http://localhost:5000/thebigday/upload" ;
+my $email      = 'portraits@27escape.com' ;
+
+# --------------------------------------------------------------------
+sub upload_file
+{
+    my ( $file, $verbose ) = @_ ;
+
+    say "uploading $file" if ($verbose) ;
+
+    # my $resp = $furl->post(
+    #     $UPLOAD_URL,
+    #     [],
+    #     {   email  => $email,
+    #         'files' => $file
+    #     },
+    #     path($file)->slurp_raw()
+    # ) ;
+
+    my $files = [ {
+            name    => $file,
+            content => path($file)->slurp_raw(),
+        }
+    ] ;
+
+    my $req = POST $UPLOAD_URL,
+        Content_Type => 'form-data',
+        Content      => [
+        email => $email,
+        files => encode_json($files),
+        ] ;
+
+    my $resp = $furl->request($req) ;
+
+    say "furl resp " . p($resp) ;
+}
+
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+    help_text    => "Upload photos",
+    help_cmdline => "",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'src|s=s'   => {
+            desc     => 'source directory copy photo files from',
+            required => 1,
+            validate => sub { my $d = fix_filename(shift) ; -d $d }
+        },
+        'daemon' => 'run as a daemon process',
+        'test'   => 'test things'
+
+    }
+) ;
+
+if ( $opt{test} ) {
+    upload_file( '/home/kmulholland/src/pub/App-Basis-ConvertText2/vert.png',
+        1 ) ;
+    msg_exit('all_done') ;
+}
+
+$opt{src} = fix_filename( $opt{src} ) ;
+
+if ( $opt{verbose} ) {
+    debug( "INFO", "Started" ) ;
+}
+
+if ( $opt{daemon} ) {
+
+    # parent should exit
+    if ( !daemonise() ) {
+
+        # parent exiting
+        exit(0) ;
+    }
+}
+
+my $file
+    = File::ChangeNotify->instantiate_watcher( directories => $opt{src} ) ;
+
+while (1) {
+    # now we can check if the file/dir has changed
+    my @changed = $file->wait_for_events() ;
+
+    if ( scalar(@changed) ) {
+        foreach my $file (@changed) {
+            next if ( $file->type() ne 'create' || !-f $file ) ;
+
+            upload_file( $file, $opt{verbose} ) ;
+
+        }
+    } else {
+        debug( "INFO", "something happend but no changes found" ) ;
+    }
+}

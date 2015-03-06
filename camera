@@ -1,0 +1,69 @@
+#!/usr/bin/env perl
+
+use strict;
+use Term::ReadKey;
+use LWP::Simple;
+use Time::HiRes qw(usleep nanosleep);
+
+my $numArgs = $#ARGV + 1;
+if ($numArgs < 3) {print "thanks, but I want:\n control.pl <IP> <username> <password>\n\n";
+
+                    exit;}
+my $ip=@ARGV[0];
+my $username=@ARGV[1];
+my $password=@ARGV[2];
+my $mplayer="mplayer rtsp://$username:$password\@$ip:88/videoSub";
+my $instructions="Controls:
+w = Pan up
+z = Pan Down
+s = Pan Right
+a = Pan Left
+o = open video url
+
+Video Access:
+
+$mplayer \n";
+
+
+my $mainurl="http://$ip:88/cgi-bin/CGIProxy.fcgi?usr=$username&pwd=$password";
+
+ReadMode( 'cbreak' );
+print $instructions;
+while (1) {
+    my $char = ReadKey( 0 );
+    print "Character: $char\n";
+    if ($char eq "w") { move("ptzMoveUp","ptzStopRun"); }
+    if ($char eq "z") { move("ptzMoveDown","ptzStopRun"); }
+    if ($char eq "s") { move("ptzMoveRight","ptzStopRun"); }
+    if ($char eq "a") { move("ptzMoveLeft","ptzStopRun"); }
+    if ($char eq "+") { move("zoomIn","zoomStop"); }
+    if ($char eq "-") { move("zoomOut","zoomStop"); }
+    if ($char eq "o") { openvid(); }
+    if ($char eq "x") { finish(); }
+}
+
+ReadMode( 'normal' );
+
+sub openvid() {
+    my $output=`$mplayer  </dev/null >/dev/null 2>&1 &`;
+    print "$output\n";
+        }
+
+sub finish {
+    print "Exiting...\n";
+    ReadMode( 'normal' );
+    exit;
+    }
+
+sub move {
+    print "\n Doing @_[0]\n";
+    my $content = get "$mainurl"."&cmd=@_[0]";
+    die "Couldn't get $mainurl" unless defined $content;
+    print "$content\n";
+    usleep 500000;
+    my $content = get "$mainurl"."&cmd=@_[1]";
+    die "Couldn't get $mainurl" unless defined $content;
+    print "$content\n"; 
+   }
+    
+  

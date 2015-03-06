@@ -1,0 +1,41 @@
+#!/bin/bash
+# install the perl packages I need for my system
+
+sudo apt-get install libgd-dev
+sudo apt-get install libmagickcore-dev
+sudo apt-get install ploticus graphvis ditaa gnuplot gle-graphics mscgen
+
+sudo apt-get install libssl-dev (for dist::zilla related stuff)
+sudo apt-get install tk-dev tklib
+
+# for pandoc
+sudo apt-get install texlive-latex-base
+
+cpanm Data::Printer AnyEvent::Twitter::Stream Try::Tiny File::Slurp Path::Tiny
+cpanm DBIx::Class
+cpanm DBD::SQLite
+cpanm DBD::Pg
+cpanm Dist::Zill
+cpanm Devel::ptkdb
+
+
+# will need to install OS support for these
+
+cpanm GD GD::Graph::bars3d  GD::Graph::mixed  GD::Sparkline  GD::Graph::bars
+cpanm GD::Graph::linespoints  GD::Graph::lines3d    GD::Graph::pie  GD::Graph::points
+cpanm GD::Graph::area  GD::Graph::line
+cpanm Image::Resize   Venn::Chart
+
+
+for package in App-Basis App-Basis-ConvertText2-UtfTransform App-Basis-ConvertText2  App-Basis-Queue WebColors Device-Hypnocube Device-BlinkStick App-Basis-Email  Net-Graylog-Client
+do
+    echo "package $package"
+    cd ~/src/pub/$package
+    dzil install
+    dzil clean
+done
+
+cd /src/When-Happens
+echo "package When-Happens"
+dzil install
+dzil clean

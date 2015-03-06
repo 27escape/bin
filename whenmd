@@ -41,7 +41,8 @@ sub convert_markdown {
         $newfile =~ s/\.md$/.pdf/i;
         # convert to pdf, use markup prince mode, always force clean creation
         # will only convert those files that have a :format keyword
-        my ( $exit, $out, $err ) = run "md2format --file='$filename' -e -p -c" . ($verbose ? " -v" : "" ) ;
+#        my ( $exit, $out, $err ) = run "md2format --file='$filename' -e -p -c" . ($verbose ? " -v" : "" ) ;
+        my ( $exit, $out, $err ) = run "ct2 -e -p -c '$filename' " . ($verbose ? " -v" : "" ) ;
         my $msg;
         if ( ( stat($newfile) )[9] > ( stat($filename) )[9] ) {
             $msg = "created $newfile";

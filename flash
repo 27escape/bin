@@ -1,0 +1,12 @@
+#!/bin/bash
+# flash the hypnocube
+# flash {color} {times}
+
+color=$1
+: ${color:=red}
+
+times=$2
+: ${times: 10}
+
+cube clear $color : update : flash $times
+sleep $times

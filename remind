@@ -1,4 +1,5 @@
 #!/bin/bash
+# https://github.com/insanum/gcalcli
 # get reminders about work things
 # uses notify-send
 

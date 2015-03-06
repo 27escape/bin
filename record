@@ -6,12 +6,11 @@
 
 # v0.1 moodfarm@cpan.org, initial work
 
-use 5.16.0;
+use feature 'say';
 use strict;
 use warnings;
 use App::Basis;
 use Data::Printer;
-use Try::Tiny;
 use POSIX qw(strftime);
 use Date::Manip ;
 # this is our db schema and stuff
@@ -19,7 +18,7 @@ use Record::Schema;
 
 # -----------------------------------------------------------------------------
 
-my $DEFAULT_DB   = '~/git/data/general_db.sqlite3';
+my $DEFAULT_DB   = '~/git/data/record.sqlite3';
 my $RECORD_TABLE = 'Record';
 my $TAGS_TABLE   = 'Tag';
 
@@ -38,11 +37,11 @@ sub create_table_if_not_exists {
     my ( $schema, $table ) = @_;
 
     # check if we have data in the table, an exception will mean no table hopefully
-    try {
+    eval {
         # attempt to read a single result from the table
         my $rs = $schema->resultset($table)->search( {}, { rows => 1 } )->single();
-    }
-    catch {
+    } ;
+    if( $@) {
         # create the table from our schema as we think it does not exist
         $schema->deploy;
     };
@@ -75,7 +74,10 @@ sub record_data {
             time  => $t,
             day   => $day,
             item  => $data->{thing},
-            value => $data->{value}
+            value => $data->{value},
+            # we do not give the option here to set the ip or source
+            ip    => '127.0.0.1',
+            source => get_program(),
         }
     );
     my $status = $new_record->update;
@@ -145,7 +147,8 @@ show_usage("Missing thing to record") if ( !$thing );
 # we can cope without a value
 $value //= '';
 
-$opt{db} =~ s/^~/$ENV{HOME}/;
+# $opt{db} =~ s/^~/$ENV{HOME}/;
+$opt{db} = fix_filename( $opt{db}) ;
 
 my $schema = Record::Schema->connect("DBI:SQLite:$opt{db}");
 
@@ -155,7 +158,7 @@ show_usage("Invalid DB file") if ( !$schema );
 create_table_if_not_exists( $schema, $RECORD_TABLE );
 create_table_if_not_exists( $schema, $TAGS_TABLE );
 
-try {
+eval {
     if ( !record_data( $schema, $RECORD_TABLE, { date => $opt{date}, thing => $thing, value => $value, $TAGS_TABLE => $opt{tag} } ) ) {
         die "failed to record data";
     }
@@ -164,10 +167,10 @@ try {
     my $rs = $schema->resultset($RECORD_TABLE)->search( { item => $thing } );
     say "There are now " . $rs->count . " $thing records";
 
-}
-catch {
+} ;
+if( $@) {
     # log the actual issue for the developer
-    debug($_);
+    debug($@);
     # remove the at line thing for user data
     s/at .*? line.*//;
     say "Error $_";

@@ -32,6 +32,119 @@ use Path::Tiny;
 use File::ChangeNotify;
 use Device::BlinkStick;
 use Data::Printer;
+use Image::ExifTool qw(:Public);
+use Imager::ExifOrientation;
+
+my $stick_on = 0;
+
+# -----------------------------------------------------------------------------
+# use the blink stick if we have been asked
+sub stick
+{
+    state $stick ;
+    my ($color) = @_;
+
+    if ($stick_on) {
+        if ( !$stick ) {
+            eval { $stick = Device::BlinkStick->new(); };
+            if ($@) {
+                say STDERR "blinkstick not available";
+                $stick_on = 0;
+                $stick    = undef;
+            }
+        }
+        if ($stick) {
+            eval { $stick->set_color($color); };
+            if ($@) {
+                say "stick not working";
+                $stick_on = 0;
+            }
+        }
+
+    }
+}
+
+# -----------------------------------------------------------------------------
+# find all the photos, check if they exist on the target, if not copy them
+# and create the md/pdf versions
+sub process_photo_dir
+{
+    my ( $dir, $target, $print, $verbose ) = @_;
+
+    say "processing $dir" if ($verbose);
+
+    my $iter = path($dir)->iterator( { recurse => 1 } );
+
+    # find all the JPG files, check if we have them already, otherwise process
+    # them
+    while ( my $path = $iter->() ) {
+        next if ( $path->path() !~ /\.(jpe?g|png)$/i );
+
+        my $file = $path->basename();
+
+        # now for the copy
+        my $dest = "$target/$file";
+        if ( !-f $dest ) {
+            if ( !-d $target ) {
+                path($target)->mkpath;
+                if ( !-d $target ) {
+                    say STDERR "Could not create destination dir $target";
+                    next;
+                }
+            }
+            if ( !-f $dest ) {
+                say "copying $file to $dest" if ($verbose);
+                path( $path->path() )->copy($dest);
+            }
+
+            my $exif = ImageInfo($dest);
+
+            # normal files need rotating 90, vertical ones also need to be fixed
+            say "Orientation: $exif->{Orientation}" if ($verbose);
+            if (   $dest =~ /\.jpe?g$/i
+                && $exif->{Orientation}
+                && $exif->{Orientation} =~ /horizontal/i ) {
+                my $s = $dest;
+                $dest =~ s/(\.jpe?g$)/_rot$1/i;
+                system("convert $s -rotate 90 $dest");
+            }
+            else {
+                say "Rotating $dest" if ($verbose);
+                # properly rotate other ones
+                my $image = Imager::ExifOrientation->rotate( path => $dest );
+
+                $dest =~ s/(\.jpe?g$)/_normalised$1/i;
+                $image->write( file => $dest, jpegquality => 90 );
+            }
+            # and print it
+
+            my $md = "title: $dest
+template: polaroid
+format: pdf
+
+
+~~~~{ .polaroid src='$dest' title=' '}
+~~~~ 
+";
+            my $md_file = $dest;
+            $md_file =~ s/\.jpe?g$/.md/i;
+            path($md_file)->spew_utf8($md) if ( !-f $md_file );
+
+            my $pdf = $dest;
+            $pdf =~ s/\.jpe?g$/.pdf/i;
+
+            if ( !-f $pdf ) {
+                my $cmd = "ct2 -c -p '$md_file' -o '$pdf'";
+                say "creating $pdf" if ($verbose);
+                system($cmd);
+                if ( -f $pdf && $print ) {
+                    system("lpr $pdf");
+                    # system("lpr -o PageSize=Custom.4x6in $pdf");
+                }
+            }
+        }
+    }
+}
 
 # -----------------------------------------------------------------------------
 # main
@@ -43,12 +156,24 @@ my %opt = init_app(
     help_cmdline => "",
     options      => {
         'verbose|v' => 'Dump extra useful information',
-        'dest|d=s'  => { desc => 'Destination to copy photo files to', required => 1 },
-    },
+        'dest|d=s'  => {
+            desc     => 'Destination to copy photo files to',
+            required => 1,
+            validate => sub {
+                my $d = shift;
+                $d = fix_filename($d);
+                path($d)->mkpath if ( !-d $d );
+                -d $d;
+                }
+        },
+        'stick|s' => 'use a BlinkStick to notify status',
+        'print|p' => 'print the images',
+        'daemon'  => 'run as a daemon process'
+    }
 );
 
+$stick_on = $opt{stick};
 $opt{dest} = fix_filename( $opt{dest} );
-path( $opt{dest} )->mkpath;
 
 msg_exit( "Could not create $opt{dest}", 2 ) if ( !-d $opt{dest} );
 
@@ -56,68 +181,47 @@ if ( $opt{verbose} ) {
     debug( "INFO", "Started" );
 }
 
+if ( $opt{daemon} ) {
+
+    # parent should exit
+    if ( !daemonise() ) {
+
+        # parent exiting
+        exit(0);
+    }
+}
 
 my $user = getlogin || getpwuid($<);
 my $watchdir = "/media/$user";
-my $file  = File::ChangeNotify->instantiate_watcher( directories => $watchdir );
-my $stick = Device::BlinkStick->new();
+my $file
+    = File::ChangeNotify->instantiate_watcher( directories => $watchdir );
 
 while (1) {
-    $stick->set_color('darkgreen');
+    stick('darkgreen');
     # now we can check if the file/dir has changed
     my @changed = $file->wait_for_events();
-    $stick->set_color('maroon');
+    stick('maroon');
 
     if ( scalar(@changed) ) {
         my $count = 0;
         foreach my $file (@changed) {
+            my $dir = $file->path;
+
+            next if ( $file->type() ne 'create' || !-d $dir );
+
             # the first thing that should be here is the media dir name
-            # lets check if this is one of our photo media devices and dump things if not
-            if ( !$count++ ) {
-                if ( !-f $file->path() . "/.photo" ) {
-                    say $file->path() . " does not have .photo";
-                    last;
-                }
+            if ( !-d "$dir/DCIM" ) {
+                # say "$dir does not have DCIM" if ( $opt{verbose} );
+                last;
             }
 
-            # we only want to know when things have been created (due to the filesystem coming online)
-            next if ( $file->type() ne 'create' || !-f $file->path() );
+            # this will find all photos
+            process_photo_dir( "$dir/DCIM", $opt{dest}, $opt{print}, $opt{verbose} );
 
-            # if we stringify we knoq we have a unix style path
-            my @parts = split( '/', path( $file->path() )->stringify() );
-            next if ( $parts[4] ne 'DCIM' );
-
-            next if ( $file->path() !~ /\.(jpg|jpg|png)$/i );
-
-            # now for the copy
-            my $dest = "$opt{dest}/" . join( '/', @parts[ 5, -1 ] );
-            if ( !-f $dest ) {
-                # flicker color while copying
-
-                # start the flickering thread
-
-                my $colors = ( $count & 1 ) ? 'darkorange' : 'orangered';
-                $stick->set_color($colors);
-                my $dir = path($dest)->dirname;
-                if ( !-d $dir ) {
-                    path($dir)->mkpath;
-                    if ( !-d $dir ) {
-                        say STDERR "Could not create destination dir $dir";
-                        next;
-                    }
-                }
-                path( $file->path() )->copy($dest);
-                #     # and print it
-
-                # and kill the flickering thread
-
-                # back to red when completed
-                $stick->set_color('maroon');
-            }
         }
     }
     else {
         debug( "INFO", "something happend but no changes found" );
     }
-    $stick->set_color('black');
+    stick('black');
 }

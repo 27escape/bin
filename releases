@@ -1,0 +1,18 @@
+#!/bin/bash
+# get the release versions from the motd on the web1 and console1 servers
+
+
+for i in `grep web1 ~/allservers.md`
+do 
+    echo 
+    echo "server $i"
+    ssh root@$i grep : /etc/motd
+done
+
+
+for i in `grep console1 ~/allservers.md`
+do 
+    echo 
+    echo "server $i"
+    ssh root@$i grep : /etc/motd
+done

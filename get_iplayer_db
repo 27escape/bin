@@ -11,18 +11,20 @@ export SQLFILE="$HOME/.get_iplayer/iplayer.sqlite3"
 export IPLAYER="$HOME/.get_iplayer/tv.cache"
 export HISTORY=/tmp/history.$$.csv
 
+GET_IPLAYER='get_iplayer --no-purge '
+
 # update the podcast db
 #get_iplayer --type=podcast 1>&2 > /dev/null
 # replace double quotes for single quotes so that csv import does not mess up
 # cat $HOME/.get_iplayer/podcast.cache | tr -d '"' | tr -d  "'" | txt2db -c --delimitor='|' podcast,- |sqlite3 $SQLFILE
 
 # update the radio db
-get_iplayer --type=radio 1>&2 > /dev/null
+$GET_IPLAYER --type=radio 1>&2 > /dev/null
 # replace double quotes for single quotes so that csv import does not mess up
-#cat $HOME/.get_iplayer/radio.cache |  tr -d '"' | tr -d  "'" | txt2db -c --delimitor='|' radio,- |sqlite3 $SQLFILE
+cat $HOME/.get_iplayer/radio.cache |  tr -d '"' | tr -d  "'" | txt2db -c --delimitor='|' radio,- |sqlite3 $SQLFILE
 
 # now do the TV
-get_iplayer 1>&2 > /dev/null
+$GET_IPLAYER 1>&2 > /dev/null
 # update the db
 # replace double quotes for single quotes so that csv import does not mess up
 cat $IPLAYER |  tr -d '"' | tr -d  "'" | txt2db -c --delimitor='|' tv,- |sqlite3 $SQLFILE

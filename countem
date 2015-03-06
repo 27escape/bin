@@ -1,0 +1,5 @@
+#!/bin/bash
+# quick script to count files in subdirs under current dir
+# stolen from http://stackoverflow.com/questions/653096/howto-free-inode-usage
+
+find . -xdev -type f | cut -d "/" -f 2 | sort | uniq -c | sort -n

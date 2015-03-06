@@ -1,0 +1,30 @@
+#!/bin/bash
+# stream all videos in ~/Videos on port 8888
+# make sure that no video filenames contain spaces or awkward characters
+
+CURR=`pwd`
+cd $HOME/Videos/
+while true
+do
+    PLAYLIST=""
+    for video in *mp4
+    do
+
+        # echo "adding $video"
+        PLAYLIST="$PLAYLIST $video"
+
+    done
+
+    # echo "cvlc $PLAYLIST --sout-keep --sout '#duplicate{dst=standard{access=http,mux=ts,dst=:8888}'"
+
+# :sout=#transcode{vcodec=h264,scale=Auto,acodec=mpga,ab=128,channels=2,samplerate=44100}:http{mux=ffmpeg{mux=flv},dst=:8888/} :sout-all :sout-keep
+
+    # cvlc $PLAYLIST --sout-keep --sout '#duplicate{dst=standard{access=http,mux=ts,dst=:8888}'
+    cvlc $PLAYLIST --sout-keep --sout-all --sout '#transcode{vcodec=h264,scale=Auto,acodec=mp3,ab=128,channels=2,samplerate=44100}:http{mux=ffmpeg{mux=flv},dst=:8888/}'
+done
+
+cd $CURR
+
+
+# using loop
+vlc <input1> <input2> ... <inputn> --loop --sout-keep --sout '#transcode{vcodec=DIV3,vb=300,size=360x270,scale=1,acodec=mp3,ab=32,channels=2}:gather:std{access=mmsh,mux=asfh,dst=:8091}'

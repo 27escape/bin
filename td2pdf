@@ -15,7 +15,7 @@ td2pdf
 
 =head1 DESCRIPTION
 
-
+convert a plaintasks file into a PDF, using markdown and my ct2 and regen scripts
 
 =cut
 
@@ -29,6 +29,35 @@ use warnings ;
 use App::Basis ;
 use Path::Tiny ;
 
+my $started_color = 'steelblue' ; #teal' ;  # '#6fae7f' 
+
+# -----------------------------------------------------------------------------
+
+sub button {
+    my ($state, $color, $text) = @_ ;
+
+    return "<span style='font-weight:bold; border: 1px solid $color;font-size:50%;" .
+        "border-radius:5px;" .
+        "color: white;background-color: $color;'>&nbsp;$text&nbsp;</span>";
+        # "border-radius:15px;" .
+    # return "<a class='button $color $state'>$text</a>";
+}
+
+# -----------------------------------------------------------------------------
+
+sub badge {
+    my ( $text, $color) = @_ ;
+    return "{{.badge subject='TASK' status='$text' color='$color' size='60'}} " ;
+}
+
+my $TASK = badge( '&nbsp;&nbsp;', 'gray') ;
+my $DONE = badge( '✔', 'green') ; # ✓
+my $AXE = badge( '✘', 'red',);
+my $STARTED = badge( '>', $started_color,);
+
+my @task_states = qw(done started lasted tostart toend critical high low due created cancelled duration) ;
+my $state_list = join( '|', @task_states) ;
+
 # -----------------------------------------------------------------------------
 # main
 
@@ -38,7 +67,9 @@ my %opt = init_app(
     help_text =>
         "convert a plaintasks file into a PDF, using markdown and my ct2 and regen scripts",
     help_cmdline => "plaintasks_file",
-    options      => {},
+    options      => {
+        'clean|c'   => 'Force a clean build of the PDF',
+        },
     #log_file => "your-logfile",
 ) ;
 
@@ -64,11 +95,18 @@ foreach my $line ( split( /\n/, $data ) ) {
         =~ s|^\*\s+(.*)|* <span style='color:gray;font-style:italic'>$1</span>|
         ;
 
-    $line =~ s|^\[ \]\s+(.*)|* <span style='color:black'>$1</span>| ;
-    $line =~ s|^\[x\]\s+(.*)|* <span style='color:green'>$1</span>| ;
-    $line =~ s|^\[+\]\s+(.*)|* <span style='color:green'>$1</span>| ;
+    # this is a bit sketchy and a mess, but if the line has an @started in it then we
+    # will modify any [ ] entry, unless there is a value inside that 
+    if( $line =~ m|\[ \].*?\@started|) {
+        $line =~ s|\[ \]|[>]| ;             # pretend we have a new symbol for started
+    }
+
+    $line =~ s|^\[ \]\s+(.*)|* $TASK <span style='color:black'>$1</span>| ;
+    $line =~ s!^\[(x|\+)\]\s+(.*)!* $DONE <span style='color:green'>$2</span>! ;
+    # $line =~ s|^\[+\]\s+(.*)|* $DONE <span style='color:green'>$1</span>| ;
+    $line =~ s|^\[>+\]\s+(.*)|* $STARTED <span style='color:$started_color'>$1</span>| ;
     $line
-        =~ s|^\[-\]\s+(.*)|* <span style='color:#ff3300;text-decoration: line-through;'>$1</span>|
+        =~ s|^\[-\]\s+(.*)|* $AXE <span style='color:#ff3300;text-decoration: line-through;'>$1</span>|
         ;
 
 # this is crap coding, but I cannot quickly figure out how to accomodate an empty $1
@@ -76,25 +114,32 @@ foreach my $line ( split( /\n/, $data ) ) {
         =~ s|^(\s+)\*\s+(.*)|$1* <span style='color:gray;font-style:italic'>$2</span>|
         ;
 
-    $line =~ s|^(\s+)\[ \]\s+(.*)|$1* <span style='color:black'>$2</span>| ;
-    $line =~ s|^(\s+)\[x\]\s+(.*)|$1* <span style='color:green'>$2</span>| ;
-    $line =~ s|^(\s+)\[+\]\s+(.*)|$1* <span style='color:green'>$2</span>| ;
+    $line =~ s|^(\s+)\[ \]\s+(.*)|$1* $TASK <span style='color:black'>$2</span>| ;
+    $line =~ s!^(\s+)\[(x|\+)\]\s+(.*)!$1* $DONE <span style='color:green'>$3</span>! ;
+    # $line =~ s|^(\s+)\[+\]\s+(.*)|$1* $DONE <span style='color:green'>$2</span>| ;
+    $line =~ s|^(\s+)\[>\]\s+(.*)|$1* $STARTED <span style='color:$started_color'>$2</span>| ;
     $line
-        =~ s|^(\s+)\[-\]\s+(.*)|$1* <span style='color:#ff3300;text-decoration: line-through;'>$2</span>|
+        =~ s|^(\s+)\[-\]\s+(.*)|$1* $AXE <span style='color:#ff3300;text-decoration: line-through;'>$2</span>|
         ;
 
     $line =~ s|(\(\d+[dwm]\))|**$1**|g ;
-    $line =~ s/\@(done|started|lasted)\s?\(/$1(/g ;
+    # reformat the done/start etc notes
+    $line =~ s/\@($state_list)\s?\((\d{4}-\d{2}-\d{2})\)/[$1: $2]/g ;
+    # lasted and due are durations
+    $line =~ s/\@(lasted|due|duration)\s?\((.*?)\)/[duration: $2]/g ;
+
+    # $line =~ s/\@(done|started|lasted|tostart)\s?\(/$1(/g ;
     $line
-        =~ s|(\@\w+)|<span style='border: 1px solid goldenrod;background-color:cornsilk;'>&nbsp;$1 &nbsp;</span>|g
+        =~ s|(\@\w+)|<span style='border: 1px solid goldenrod;background-color:cornsilk;font-size:75%;'>&nbsp;$1 &nbsp;</span>|g
         ;
 
     $outdata .= "$line\n" ;
 }
 
 path($outfile)->spew_utf8($outdata) ;
-my ( $code, $out, $err ) = run_cmd("regen $outfile") ;
-say $out ;
+my $clean = $opt{clean} ? "-c" : "" ;
+my ( $code, $out, $err ) = run_cmd("regen $clean $outfile") ;
+print $out ;        # $out will already have a LF at the end
 if ($err) {
     say "$err" ;
 } else {

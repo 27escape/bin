@@ -1,0 +1,17 @@
+#!/bin/bash
+# check for a meeting and flash the color if there is one
+
+# minutes to check within
+minutes=$1
+: ${minutes:=5}
+
+# what color to flash
+color=$2
+: ${color:=cyan}
+
+# how often to flash
+times=$3
+: ${times: 10}
+
+
+gcalcli --nocolor --nostarted remind $minutes "flash $color 10"

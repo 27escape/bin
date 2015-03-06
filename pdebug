@@ -2,10 +2,25 @@
 # run a perl script under a debugger
 # moodfarm@cpan.org
 
+OLD_PERL='perl-5.21.5'
+PERL5LIB=$PERL5LIB:./lib
+
 PORT=9876
 
-# for the perl tk debugger
+# I have managed to get ptkdb installed into perl 5.21.5 only so
+# will switch to that for the purposes of debugging
+
+# perlbrew exec --with $OLD_PERL perl -d:ptkdb $*
+
 perl -d:ptkdb $*
+
+# for the perl tk debugger Devel::ptkdb
+# perl -d:ptkdb $*
+# for the perl tcltk debugger
+# perl -d:tcltkdb $*
+
+# basic console debugger
+# perl -d $*
 
 # maybe look at Devel::Trepan and Devel::tkdb
 
@@ -13,4 +28,9 @@ perl -d:ptkdb $*
 # perl -d:hdb=port:$PORT $* &
 # sleep 2
 # # and open a webpage for it with your default browser
-# x-www-browser http://localhost:$PORT
+# x-www-browser http://localhost:$PORT/debugger-gui
+
+# try Devel::Trepan
+# perl -d:Trepan $*
+
+

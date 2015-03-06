@@ -1,0 +1,15 @@
+#!/bin/bash
+# PODNAME: cheerstick
+# ABSTRACT: make blinkstick respond to cheerlights
+
+# to change global cheerlights colors
+# http://www.cheerlights.com/control-cheerlights
+# Example Tweet: @CheerLights Paint the town red
+
+  # fetch the cheerlights status and update the hypnocube/stick
+  color=`curl -s http://api.thingspeak.com/channels/1417/field/1/last.json | perl -ne '/.*?"field1":"(.*?)"/ ; print "$1";'`
+  cube sphere $color : update
+  stick -c $color
+
+# perl pod may get added so lets exit before thats an issue
+exit ;

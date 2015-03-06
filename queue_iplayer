@@ -60,7 +60,7 @@ use App::Basis::Config;
 
 # -----------------------------------------------------------------------------
 
-my $IPLAYER_CMD = "$ENV{HOME}/bin/get_iplayer ";
+my $IPLAYER_CMD = "$ENV{HOME}/bin/get_iplayer --no-purge ";
 my $verbose ;
 
 # -----------------------------------------------------------------------------
@@ -136,6 +136,7 @@ debug( "INFO", "result: $out") ;
 # do the tv shows
 my $queue;
 map { $queue .= '"' . $_ . '" ' } @{$tv};
+$queue |= '' ;
 $command = $IPLAYER_CMD . "--type=tv --pvr-queue $queue ";
 debug( "INFO", "Adding tv shows: $queue");
 ( $ret, $out, $err ) = run_cmd($command);
@@ -144,6 +145,7 @@ debug( "INFO", "result: $out") ;
 # do the radio shows
 $queue = "";    # reset the queue
 map { $queue .= '"' . $_ . '" '  } @{$radio};
+$queue |= '' ;
 $command = $IPLAYER_CMD . "--type=radio --pvr-queue $queue ";
 debug( "INFO", "Adding radio shows: $queue");
 ( $ret, $out, $err ) = run_cmd($command);
