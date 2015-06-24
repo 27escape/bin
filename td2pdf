@@ -80,6 +80,7 @@ show_usage("You need to pass a valid filename") if ( !-f $td ) ;
 
 my $outfile = $td ;
 $outfile =~ s/\.td$/.md/i ;
+$outfile =~ s/\.md$/-project.md/ if( $outfile !~ /-project/) ;
 
 my $data = path($td)->slurp_utf8() ;
 
@@ -138,10 +139,10 @@ foreach my $line ( split( /\n/, $data ) ) {
 
 path($outfile)->spew_utf8($outdata) ;
 my $clean = $opt{clean} ? "-c" : "" ;
-my ( $code, $out, $err ) = run_cmd("regen $clean $outfile") ;
+my ( $code, $out, $err ) = run_cmd("regen $clean '$outfile'") ;
 print $out ;        # $out will already have a LF at the end
 if ($err) {
-    say "$err" ;
+    say "$err - check $outfile" ;
 } else {
     # remove the intermediate markdown file
     unlink $outfile ;

@@ -5,9 +5,7 @@
 # we assume that the plantuml.jar file is in the same directory as this executable
 EXEC_DIR=`dirname $0`
 PLANTUML="$EXEC_DIR/plantuml.jar"
-
-INPUT=$1
-OUPUT=$2
+SVG=""
 
 function show_usage  {
     arg=$1
@@ -19,7 +17,10 @@ function show_usage  {
 
     echo "Create a UML diagram from an input text file (see http://plantuml.sourceforge.net/ for reference)
 
-    usage: $0 inputfile outputfile.png
+    usage: $0 [-s] inputfile outputfile
+
+        -s    create SVG output
+
 "
     if [ "$arg" != "" ] ; then
         echo "$arg
@@ -27,6 +28,28 @@ function show_usage  {
     fi
     exit $err
 }
+
+# process command line args
+
+while getopts “hs” OPTION
+do
+  case $OPTION in
+    h) usage
+      exit 1
+      ;;
+    s) SVG="-tsvg"
+      ;;
+    *) usage
+      exit 1
+      ;;
+  esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
+# now assign the files
+INPUT=$1
+OUTPUT=$2
 
 if [ ! -f $PLANTUML ] ; then 
     show_usage "Could not find plantuml.jar, expecting it to be $PLANTUML" 2
@@ -41,11 +64,11 @@ if [ ! -f "$INPUT" ] ; then
     show_usage "ERROR: Could not find input file $1"
 fi
 
-if [ "$OUPUT" == "" ] ; then
+if [ "$OUTPUT" == "" ] ; then
     show_usage "ERROR: No output file specified"
 fi
 
 # we use the pipe option to control output into the file we want
 
-cat "$INPUT" | java -jar $PLANTUML -nbthread auto -pipe >$OUPUT
+cat "$INPUT" | java -jar $PLANTUML $SVG -nbthread auto -pipe >$OUTPUT
 # exit 0 
