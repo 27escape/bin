@@ -1,36 +1,34 @@
 #!/bin/sh
 # run a perl script under a debugger
 # moodfarm@cpan.org
-
-OLD_PERL='perl-5.21.5'
-PERL5LIB=$PERL5LIB:./lib
-
-PORT=9876
-
-# I have managed to get ptkdb installed into perl 5.21.5 only so
-# will switch to that for the purposes of debugging
-
-# perlbrew exec --with $OLD_PERL perl -d:ptkdb $*
-
-perl -d:ptkdb $*
-
-# for the perl tk debugger Devel::ptkdb
-# perl -d:ptkdb $*
-# for the perl tcltk debugger
-# perl -d:tcltkdb $*
-
-# basic console debugger
+# basic console debugger - I am rubbish with this
 # perl -d $*
 
-# maybe look at Devel::Trepan and Devel::tkdb
+PERL5LIB=$PERL5LIB:./lib
 
-# for the web based debugger
-# perl -d:hdb=port:$PORT $* &
-# sleep 2
-# # and open a webpage for it with your default browser
-# x-www-browser http://localhost:$PORT/debugger-gui
+# as cannot get the .Xdefaults/.Xresources to work, lets go for the alternative
+export PTKDB_CODE_FONT='-*-clean-*-*-*-*-*-150-*-*-*-*-*-*'
+# export PTKDB_CODE_FONT='-schumacher-*-*-*-*-*-*-160-*-*-*-*-*-*'
+# export PTKDB_CODE_FONT='-*-*-*-*-*-*-*-140-*-*-*-*-*-*'
+export PTKDB_EVAL_FONT="$PTKDB_CODE_FONT"
+export PTKDB_CODE_SIDE='right'
+export PTKDB_SCROLLBARS_ONRIGHT=1
+DEBUGGER=ptkdb
+# DEBUGGER=hdb
+# DEBUGGER=tkdb
+# DEBUGGER=Trepan
 
-# try Devel::Trepan
-# perl -d:Trepan $*
+if [ "$DEBUGGER" = "hdb" ] ; then
+    # for the web based debugger
+    PORT=9876
+    perl -d:hdb=port:$PORT $* &
+    sleep 2
+    # and open a webpage for it with your default browser
+    x-www-browser http://localhost:$PORT/debugger-gui 2>/dev/null
+else
+    perl -d:$DEBUGGER $*
+fi
+
+
 
 

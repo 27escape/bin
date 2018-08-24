@@ -1,0 +1,95 @@
+#!/usr/bin/env perl
+# taken from http://perltricks.com/article/179/2015/7/1/Basic-network-hacking-with-Perl
+# cannot get it to work - too many dependencies on old C code etc
+
+use strict ;
+use warnings ;
+use feature 'say' ;
+use Net::ARP ;
+use Net::Address::IP::Local ;
+use Net::Frame::Device ;
+use Net::Frame::Dump::Online ;
+use Net::Frame::Simple ;
+use Net::Netmask ;
+use Net::Pcap () ;
+
+# -----------------------------------------------------------------------------
+
+sub oui_lookup
+{
+    my $mac_address = shift ;
+    $mac_address =~ s/:/-/g ;
+    my $oui = substr $mac_address, 0, 8 ;
+
+    # oui file available from http://standards-oui.ieee.org/oui.txt
+    open( my $oui_file, '<', $ENV{HOME} . '/tmp/oui.txt' ) or die $! ;
+    while ( my $line = <$oui_file> ) {
+        if ( $line =~ /$oui/i ) {
+            my ( $address, $manufacturer_name ) = split /\t+/, $line ;
+            return "$manufacturer_name" ;
+            last ;
+        }
+    }
+    return "Unknown" ;
+}
+
+# -----------------------------------------------------------------------------
+
+sub fingerprint
+{
+    my $target_mac = shift or die "Usage\n\t./id_target \n" ;
+
+    printf "Address: %s, MAC Manufacturer: %s\n",
+        $target_mac, oui_lookup($target_mac) ;
+
+
+}
+
+
+
+
+
+my $network_device_name = $ARGV[0] if @ARGV ;
+
+unless ($network_device_name) {
+    $network_device_name = Net::Pcap::pcap_lookupdev( \my $error_msg ) ;
+    die "pcap device lookup failed " . ( $error_msg || '' )
+        if $error_msg || not defined $network_device_name ;
+}
+
+my $device = Net::Frame::Device->new( dev => $network_device_name ) ;
+
+my $pcap = Net::Frame::Dump::Online->new(
+    dev           => $network_device_name,
+    filter        => 'arp and dst host ' . $device->ip,
+    promisc       => 0,
+    unlinkOnStop  => 1,
+    timeoutOnNext => 10
+) ;
+
+printf "Gateway IP: %s\nStarting scan\n", $device->gatewayIp ;
+
+$pcap->start ;
+
+for my $ip_address ( Net::Netmask->new( $device->subnet )->enumerate ) {
+    Net::ARP::send_packet(
+        $network_device_name,
+        $device->ip,
+        $ip_address,
+        $device->mac,
+        "ff:ff:ff:ff:ff:ff",    # broadcast
+        "request",
+    ) ;
+}
+
+until ( $pcap->timeout ) {
+    if ( my $next = $pcap->next ) {
+        my $frame     = Net::Frame::Simple->newFromDump($next) ;
+        my $local_ip  = Net::Address::IP::Local->public ;
+        my $frame_ip  = $frame->ref->{ARP}->srcIp ;
+        my $frame_mac = $frame->ref->{ARP}->src ;
+        say "$frame_ip $frame_mac"
+            . ( $local_ip eq $frame_ip ? ' (this machine)' : '' ) ;
+    }
+}
+END { say "Exiting." ; $pcap->stop }

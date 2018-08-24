@@ -1,0 +1,94 @@
+#!/bin/bash
+# run makepdf against a given path
+
+. $HOME/bin/include/script_base
+
+# ----------------------------------------------------------------------------
+
+find_markdown_process() {
+    path=$1
+    # make sure we are not checking for ourself too
+    ps ax|grep -v grep | grep -v "$0" | grep makepdf |grep "$path"|awk '{print $1}'
+}
+
+# ----------------------------------------------------------------------------
+
+start_markdown() {
+    path=${1:-}
+    # ignore=${2:-}
+
+    set +o errexit
+    proc=$(find_markdown_process "$path")
+    set -o errexit
+
+    if [ "$proc" == "" ] ; then
+        # makepdf --daemon --dir="$path" --ignore="$ignore"|| true
+        makepdf --daemon --dir="$path" || true
+    fi
+}
+
+# ----------------------------------------------------------------------------
+
+stop_markdown() {
+    path=$1
+
+    verbose "Stopping markdown for $path"
+    proc=`find_markdown_process $path`
+
+    if [ "$proc" != "" ] ; then
+        kill $proc
+        kill -9 $proc 2>/dev/null
+    fi
+}
+
+# ----------------------------------------------------------------------------
+# main
+
+HELP="Usage : \n
+    --help        prints this message\n
+    <path>        run Markdown convertor on this path
+    -k <path>     kill a running process against this path
+    -i <path>     colon separated paths to ignore markdown processing
+    -v            output verbose messages
+\n"
+
+END_IT=0
+IGNORE=""
+export VERBOSE=0
+# process command line args
+
+while getopts "hkvi:" OPTION ; do
+    case $OPTION in
+        h) show_usage ''
+        ;;
+        k) END_IT="YES"
+        ;;
+        v) VERBOSE=1
+        ;;
+        i) IGNORE=$OPTARG
+        ;;
+    esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
+# now process the command
+
+path=${1:-}
+
+case $path in
+    "") show_usage ''
+    ;;
+    *)
+        if [ ! -d "$path" ] ; then
+            show_usage "Path '$path' does not exist, needs to be a directory"
+        fi
+        if [ "$END_IT" == "YES" ] ; then
+            stop_markdown "$path"
+        else
+            start_markdown "$path" "$IGNORE"
+        fi
+        exit
+    ;;
+esac
+

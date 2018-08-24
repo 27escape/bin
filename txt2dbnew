@@ -1,0 +1,570 @@
+#!/usr/bin/env perl
+# convert a csv like text file into a series of db statements
+# this can be used to either manage proper csv files
+# or unstructured text files that people want in an database
+#
+# (c) kevin Mulholland 2004, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# v0.2 4/11/2009 moodfarm@cpan.org, variation on my txt2xls script
+# v0.3 28/09/2011 moodfarm@cpan.org, using Text::CSV::Slurp
+# v0.4 14/02/2012 moodfarm@cpan.org, fixed index issue when csv header not uppercase
+# v0.5 09/07/2013 moodfarm@cpan.org, added field indexing, refactored to stream using
+#   Text::CSV::Auto to save memory when processing massive (> 2GB) files
+# v0.6 31/08/2013 moodfarm@cpan.org, replaced Text::CSV::Auto with Text::CSV_XS
+#   as the former cannot handle STDIN, new process seems faster too!
+# v0.7 2015-12-17 moodfarm@cpan.org, start to add in the datetime expansion
+
+use 5.16.0 ;
+use feature "state" ;
+use strict ;
+use warnings ;
+use utf8::all ;
+use Text::CSV_XS ;
+use Try::Tiny ;
+use Encode ;
+use Clone qw(clone) ;
+
+use Data::Printer ;
+use App::Basis ;
+
+# -----------------------------------------------------------------------------
+
+use constant BUFFER_SIZE => 20_000_000 ;
+
+my $DELIMITOR     = ',' ;
+my $ANALYSE_LINES = 5000 ;
+my $date_expand   = 0 ;      # nasty global till I sort things out
+my @date_fields ;
+
+# -----------------------------------------------------------------------------
+# stolen from neech and modified
+sub looks_like {
+    my ( $match, $lastGuess ) = @_ ;
+
+    $lastGuess ||= [ ( 'NOTSEEN', 0 ) ] ;
+    my $maxLen
+        = length($match) > $lastGuess->[1]
+        ? length($match)
+        : $lastGuess->[1] ;
+    my %colWeight = (
+        NOTSEEN     => 0,
+        BOOL        => 1,
+        INT         => 2,
+        FLOAT       => 3,
+        DATETIME    => 4,
+        DATE        => 5,
+        TIME        => 6,
+        IP          => 7,
+        MAC_ADDRESS => 8,
+        VARCHAR     => 9,
+        TEXT        => 10 ) ;
+
+    return $lastGuess if !defined $match || length($match) < 1 ;
+    return [ ( 'BOOL', $maxLen ) ]
+        if $colWeight{ $lastGuess->[0] } <= $colWeight{BOOL}
+        && ( !defined $match || $match eq '' || $match =~ /^[01]$/ ) ;
+    return [ ( 'INT', $maxLen ) ]
+        if $colWeight{ $lastGuess->[0] } <= $colWeight{INT}
+        && $match =~ /^-?[0-9,]+$/ ;
+    return [ ( 'FLOAT', $maxLen ) ]
+        if $colWeight{ $lastGuess->[0] } <= $colWeight{FLOAT}
+        && $match =~ /^-?[0-9,]*\.[0-9]+$/ ;
+
+    return [ ( 'DATETIME', $maxLen ) ]
+        if $colWeight{ $lastGuess->[0] } <= $colWeight{DATETIME}
+        && ( $match
+        =~ m|^\d{1,2}/\d{1,2}/\d{2,4}[\s.]\d{1,2}:\d{1,2}:\d{1,2}\s[AP]M$|i
+        || $match
+        =~ /^\d{2,4}-\d{1,2}-\d{1,2}[\s\.T]\d{1,2}:\d{1,2}:\d{1,2}(\+\d{4})?/
+        ) ;
+    return [ ( 'DATE', $maxLen ) ]
+        if $colWeight{ $lastGuess->[0] } <= $colWeight{DATE}
+        && ( $match =~ m|^\d{1,2}/\d{1,2}/\d{2,4}$|
+        || $match =~ /^\d{2,4}-\d{1,2}-\d{1,2}$/ ) ;
+    return [ ( 'TIME', $maxLen ) ]
+        if $colWeight{ $lastGuess->[0] } <= $colWeight{TIME}
+        && $match =~ /^\d{1,2}:\d{1,2}:\d{1,2}$/ ;
+
+    return [ ( 'IP', $maxLen ) ]
+        if $colWeight{ $lastGuess->[0] } <= $colWeight{IP}
+        && $match =~ /^(?:\d{1,3}\.){3}\d{1,3}$/ ;
+    return [ ( 'MAC_ADDRESS', $maxLen ) ]
+        if $colWeight{ $lastGuess->[0] } <= $colWeight{MAC_ADDRESS}
+        && $match =~ /^(?:[[:xdigit:]]{2}[-:]){5}[[:xdigit:]]{2}$/ ;
+
+    return [ ( 'VARCHAR', $maxLen ) ]
+        if $colWeight{ $lastGuess->[0] } <= $colWeight{VARCHAR}
+        && length($match) <= 255 ;
+    return [ ( 'TEXT', $maxLen ) ] ;
+}
+
+# -----------------------------------------------------------------------------
+# stolen from neech and tidied
+sub round_up {
+    my ($v) = @_ ;
+    $v ||= 0 ;
+    $v += 10 if $v >= 10 ;    # A little extra space
+    my @snap  = qw(1 4 8 16 32 48 64) ;
+    my $multi = 10 ;
+
+    my $sret ;
+    for my $snap (@snap) {
+        if ( $snap >= $v ) {
+            $sret = $snap ;
+            last ;
+        }
+    }
+
+    my $mret
+        = $v % $multi
+        ? ( ( int( $v / $multi ) * $multi ) + $multi )
+        : $v ;
+    $mret ||= $multi ;
+
+    return defined $sret && $sret <= $mret ? $sret : $mret ;
+}
+
+# -----------------------------------------------------------------------------
+# consistent way to clean up field names, we store the pre and post versions
+# to speed up repeated conversions
+sub clean_field {
+    state %clean_data ;
+    my $field = shift ;
+    my $pre   = $field ;
+
+    if ( !$clean_data{$field} ) {
+        $field =~ s/[\s\(\{\.\:]/_/g ;
+        $field =~ s/[\#\;\\\|\/\)\}\'\"]//g ;
+
+        # index seems to be a special name esp for sqlite
+        $field = '_index' if ( $field eq 'index' ) ;
+        $clean_data{$pre} = lc $field ;
+    }
+
+    return $clean_data{$pre} ;
+}
+
+# -----------------------------------------------------------------------------
+# stolen from neech and modified
+sub generate_schema {
+    my ( $table, $data, $primary_keys ) = @_ ;
+    return unless defined $table && defined $data ;
+
+    my $schema = {} ;
+    my $count  = scalar( @{$data} ) ;
+    my %keymap ;
+
+    for ( my $i = 0; $i < $count; $i++ ) {
+        my $struct = @{$data}[$i] ;
+        while ( my ( $k, $v ) = each %{$struct} ) {
+            my $real_name = $k ;
+
+            # do some tidy ups of the field names
+            my $clean = clean_field($k) ;
+            if ( !$keymap{$real_name} ) {
+                $keymap{$real_name} = $clean ;
+            }
+
+            my $aref = looks_like( $v, $schema->{$clean} ) ;
+            $schema->{$clean} = $aref if ( $aref->[0] ne 'NOTSEEN' ) ;
+        }
+    }
+
+    if ($date_expand) {
+
+        # expand the schema here
+        foreach my $f ( keys %$schema ) {
+            my $field_type = $schema->{$f}->[0] ;
+            if ( $field_type eq 'DATETIME' && $date_expand ) {
+                my ( $d, $t ) = split( ' ', $schema->{$f}->[1] ) ;
+                $schema->{ $f . "_datepart" } = [ "DATE", $d ] ;
+                $schema->{ $f . "_timepart" } = [ "TIME", $t ] ;
+            }
+        }
+    }
+
+# now we need to go through the schema and decide which columns we want to index on
+# int/float/date/datetime/time/ip/mac_address, for the latter 2, we also need then to
+# rename them to varchar fields
+# index lots of things, it cannot hurt!
+
+    my $index_str = "" ;
+
+    while ( my ( $field, $value ) = each %$schema ) {
+        my ( $field_type, $size ) = @$value ;
+        if ( $field_type =~ /INT|FLOAT|DATE|TIME|IP|MAC/i ) {
+            $field_type = lc($field_type) ;
+            $index_str
+                .= "CREATE INDEX IF NOT EXISTS $table"
+                . "_$field"
+                . "_$field_type"
+                . "_idx on $table($field) ;\n" ;
+
+            $schema->{$field} = [ 'VARCHAR', $size ]
+                if ( $field_type =~ /ip|mac/ ) ;
+        }
+    }
+
+    my @columns       = () ;
+    my @columns_order = sort keys %{$schema} ;
+    for my $column (@columns_order) {
+        next if ( !$schema->{$column} ) ;
+        my ( $type, $length ) = @{ $schema->{$column} } ;
+        push @columns,
+            sprintf(
+            "\t%s %s%s",
+            lc($column),
+            $type,
+            (   grep( $_ eq $type, qw(VARCHAR INT) )
+                ? '(' . round_up($length) . ')'
+                : '' ), ) ;
+    }
+
+    my $primarykey = $primary_keys ? ",\n\tPRIMARY KEY ($primary_keys)" : '' ;
+
+    my $sql
+        = "CREATE TABLE IF NOT EXISTS $table (\n"
+        . join( ",\n", @columns )
+        . $primarykey
+        . "\n) ;\n" ;
+
+    # add in the index
+    $sql .= $index_str ;
+
+    # add the real field names into the schema
+    foreach my $k ( keys %$schema ) {
+        my $a   = $schema->{$k} ;
+        my $val = $keymap{$k} ;
+        if ( !$val ) {
+            $val = $k eq '_index' ? 'index' : $k ;
+        }
+        push @$a, $val ;
+        $schema->{$k} = $a ;
+    }
+
+    # we do not have this field anymore, its been renamed
+    delete $schema->{index} ;
+
+    return ( $schema, $sql ) ;
+}
+
+# -----------------------------------------------------------------------------
+sub _build_line {
+    my ( $table, $schema, $row, $replace, $cols ) = @_ ;
+
+    my @columns = $cols ? @$cols : sort keys %{$schema} ;
+
+    my $line
+        = "INSERT $replace INTO '$table' ("
+        . join( ', ', map {"'$_'"} @columns )
+        . ") VALUES ("
+        . join(
+        ', ',
+        map {
+            my $f          = $_ ;
+            my $key        = $schema->{$f}->[2] ;
+            my $field_type = $schema->{$f}->[0] ;
+            my $out        = "" ;
+
+            if ( $date_expand && $field_type eq 'DATETIME' ) {
+                my ( $date, $time ) = split( ' ', $row->{$key} ) ;
+                $row->{ $key . "_datepart" } = $date ;
+                $row->{ $key . "_timepart" } = $time ;
+            }
+
+            if ( $key && defined $row->{$key} ) {
+                $out = $row->{$key} ;
+
+                # remove commas for numbers
+                if ( $schema->{$key}->[0] ) {
+                    if ( $schema->{$key}->[0] =~ /INT|FLOAT/ ) {
+                        $out =~ s/,//g ;
+                        if ( !$out ) {
+                            $out
+                                = $schema->{$key}->[0] eq 'INT'
+                                ? '0'
+                                : '0.0' ;
+
+                        }
+                    }
+                }
+                $out =~ s/'/''/g ;
+
+                $out = "'$out'" ;
+            }
+            $out
+        } @columns ) . ") ;" ;
+
+    $line =~ s/''// ;
+    return $line ;
+}
+
+# "INSERT $replace INTO '$table' ("
+#     . join( ', ', map {"'$_'"} @columns )
+#     . ") VALUES ("
+#     . join(
+#     ', ',
+#     map {
+#         my $f          = $_ ;
+#         my $key        = $schema->{$f}->[2] ;
+#         my $field_type = $schema->{$f}->[0] ;
+#         $key = $key eq '_index' ? 'index' : $key ;
+
+#         if ( $date_expand && $field_type eq 'DATETIME' ) {
+#             my ( $date, $time ) = split( ' ', $d->{$key} ) ;
+#             $d->{ $key . "_datepart" } = $date ;
+#             $d->{ $key . "_timepart" } = $time ;
+#         }
+
+#         my $out = "" ;
+#         if ( $key && defined $d->{$key} ) {
+#             $out = $d->{$key} ;
+
+#             # remove commas for numbers
+#             if ( $field_type =~ /INT|FLOAT/ ) {
+#                 $out =~ s/,//g ;
+#             } elsif ( $field_type eq 'DATE' ) {
+
+#                 # we are guessing that dates are dd/mm/yyy and
+#                 # can be swapped around if they are mm/dd/yyyy
+#                 # then they will also be swapped and messed up
+#                 $out
+#                     =~ s|^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$|$3/$2/$1|
+#                     ;
+#             }
+
+#             $out =~ s/'/''/g ;
+
+#             $out = "'$out'" ;
+#         }
+#         $out
+#     } @columns )
+#     . ") ;"
+
+# -----------------------------------------------------------------------------
+# stolen from neech, and modified
+# prints the table info as soon as it finds it, makes piping into other commands
+# that bit faster
+sub write_table {
+    my ( $table, $data, $drop, $replace, $primary_keys, $delete ) = @_ ;
+    return unless defined $data && ref($data) eq 'ARRAY' ;
+
+    $replace = $replace ? "OR REPLACE" : "" ;
+
+    say encode( 'UTF-8', "DROP TABLE IF EXISTS '$table' ;" ) if ($drop) ;
+
+    my ( $schema, $sql ) = generate_schema( $table, $data, $primary_keys ) ;
+
+    # make sure schema and indexing done
+    say encode( 'UTF-8', "BEGIN ;" ) ;
+    say encode( 'UTF-8', $sql ) ;
+    say encode( 'UTF-8', "DELETE from '$table' ;" ) if ($delete) ;
+
+    my @columns = sort keys %{$schema} ;
+
+    foreach my $d ( @{$data} ) {
+        my $add = 0 ;
+
+        # test if all empty, do not add it if so
+        map { $add += ( defined $_ && $_ eq '' ) ? 0 : 1 } values %$d ;
+        if ($add) {
+
+            # remember we need to escape single quotes with two single quotes
+            say encode( 'UTF-8',
+                _build_line( $table, $schema, $d, $replace, \@columns ) ) ;
+        }
+    }
+
+    # make sure schema and indexing done
+    say encode( 'UTF-8', "COMMIT ;" ) ;
+
+    return $schema ;
+}
+
+# -----------------------------------------------------------------------------
+sub write_line {
+    my ( $table, $schema, $row, $replace ) = @_ ;
+    $replace = $replace ? "OR REPLACE" : "" ;
+
+    delete $schema->{index} ;
+
+    # remember we need to escape single quotes with two single quotes
+    say encode( 'UTF-8', _build_line( $table, $schema, $row, $replace ) ) ;
+}
+
+# -----------------------------------------------------------------------------
+sub process_csv {
+    my ( $infilename, $table, $opt ) = @_ ;
+    my $line      = 0 ;
+    my $processed = 0 ;
+    my ( $fh, $schema, $csv, @analyse_data ) ;
+    my $begin = 0 ;
+
+    if ( $infilename eq '-' ) {
+
+        # reopen/dup STDIN
+        if ( !open( $fh, "<&", \*STDIN ) ) {
+            say STDERR "Failed to dup STDIN" ;
+            return 0 ;
+        }
+    } else {
+        if ( !open( $fh, "<", $infilename ) ) {
+            say STDERR "Failed to open $infilename" ;
+            return 0 ;
+        }
+    }
+
+  # for sqlite we can disable journalling for speedier inserts, riskier though
+    say encode(
+        'UTF-8', "
+PRAGMA synchronous = 0 ;
+-- PRAGMA journal_mode = off ;
+PRAGMA cache_size=8192 ;
+-- start the transaction
+"
+    ) ;
+
+    $csv = Text::CSV_XS->new(
+        {   sep_char            => $opt->{delimitor},
+            binary              => 1,
+            allow_loose_escapes => 1,
+            auto_diag           => 0 } ) ;
+
+    my @headers ;
+
+    # get the first line and calc the fieldnames, make them nice
+    my $header_line = <$fh> ;
+    my $split       = $opt->{delimitor} ;
+    $split = '\|' if ( $split eq '|' ) ;
+    foreach my $field ( split( $split, $header_line ) ) {
+        $field =~ s/^\s?^"(.*?)"\s?$/$1/
+            ;    # remove any leading/trailing space and double quotes
+        $field =~ s/^\s?^(.*?)\s?$/$1/ ;   # remove any leading/trailing space
+        $field =~ s/\s/_/g ;               # replace spaces
+        $field =~ s/^#// ;                 # replace leading hash its not good
+        $field = lc($field) ;
+        push @headers, $field ;
+    }
+    msg_exit( "This does not appear to be CSV data", 2 ) if ( !@headers ) ;
+
+    # repopulate $row on each getline
+    while ( my $trow = $csv->getline($fh) ) {
+        my $row ;
+        map { $row->{$_} = shift @$trow ; } @headers ;
+
+        if ( $line++ < $opt->{lines} ) {
+
+         # we need to clone the data as $row reference is updated each getline
+            push @analyse_data, clone $row ;
+        } else {
+            if ( !$processed ) {
+                $processed = 1 ;
+
+                # say STDERR "a. " . p(@analyse_data) ;
+                $schema = write_table(
+                    $table,          \@analyse_data, $opt->{create},
+                    $opt->{replace}, $opt->{key} ) ;
+            } else {
+
+                # say encode( 'UTF-8', "BEGIN;" if( !$begin)
+
+                write_line( $table, $schema, $row, $opt->{replace} ) ;
+
+                # say "schema ", p($schema) ;
+                # say "line ", p( $row) ;
+            }
+        }
+    }
+    if ( !$processed ) {
+
+        # say STDERR "a. " . p(@analyse_data) ;
+        write_table(
+            $table,          \@analyse_data, $opt->{create},
+            $opt->{replace}, $opt->{key},    $opt->{delete} ) ;
+    }
+
+    return $line ;
+}
+
+# -----------------------------------------------------------------------------
+# main
+my $program = get_program() ;
+my %opt     = init_app(
+    help_text    => "Convert CSV data into SQL insert/replace statements",
+    help_cmdline => "[tablename,]inputfilename ...
+    $program -            (read from stdin)
+    $program filename.csv
+    $program db_table,csv1.csv
+    $program table1,csv1.csv table2,csv2.csv ... tablex,csvx.csv
+    $program --delimitor=';' filename.csv
+",
+    options => {
+        'delimitor|separator=s' => {
+            desc    => "delimitor/separator of columns",
+            default => $DELIMITOR },
+        'lines|l=i' => {
+            desc    => "number of lines lines to analyse CSV fields (min 10)",
+            default => $ANALYSE_LINES,
+            validate => sub { my $val = shift ; return $val >= 10 ; }
+        },
+        'vebose|v'  => "be verbose about things",
+        'create|c'  => 'create a new table called tablename',
+        'delete|d'  => 'delete all table entries before insert',
+        'replace|r' => 'create replace rather than insert SQL statements',
+        'add|a'     => 'Add extra field with value to every CSV row',
+        'datetime' =>
+            'expand any datetime fields into date and time fields, as fieldname_date, fieldname_time',
+
+        # 'create_id'   => 'create an autoincrementing row id field',
+        'key|k=s' =>
+            'comma separated list of heads that should become primary keys', }
+) ;
+
+show_usage("Bad arguments") if ( scalar @ARGV < 1 ) ;
+
+$date_expand = $opt{datetime} ;
+
+# if we want the pipe symbol, make sure its correct for regexp
+$opt{delimitor} = '|'  if ( $opt{delimitor} eq '|' ) ;
+$opt{delimitor} = "\t" if ( $opt{delimitor} eq '\t' ) ;
+
+my $count = 1 ;
+
+# now process the files listed on the command line
+foreach my $name (@ARGV) {
+    my $infilename ;
+    my $table ;
+
+    # either filename or "table,filename"
+    my ( $a, $b ) = split( /,/, $name ) ;
+
+    # if no table then add a default
+    if ( !$b ) {
+        $infilename = $a ;
+
+        # use the filename up to any '.' as the table name
+        $a =~ m/(\w+)\.\w+$/ ;
+
+        # name the table
+        $table = $1 ? $1 : "table_$count" ;
+        $count++ ;
+    } else {
+        $infilename = $b ;
+        $table      = $a ;
+    }
+
+    # make sure the table name is ok
+    $table =~ s/^\s+(.*?)\s+$/$1/ ;    # trim leading/trailing whitespace
+    $table =~ s/[- ]/_/g ;             # replace minus with underscore
+    $table =~ s/["']//g ;              # remove double quotes
+    $infilename =~ s/^~/$ENV{HOME}/ ;
+    my $status = process_csv( $infilename, $table, \%opt ) ;
+    if ($status) {
+        if ( $opt{verbose} ) {
+            say "processed " . ( $infilename ne '-' ? $infilename : "" ) ;
+        }
+    } else {
+        say STDERR "failed to process $infilename" ;
+    }
+}

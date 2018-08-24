@@ -2,11 +2,59 @@
 # flash the hypnocube
 # flash {color} {times}
 
+PROGRAM=`basename $0`
+
+show_usage()  {
+    arg=$1
+    err=$2
+
+    if [ "$err" == "" ] ; then
+        err=1
+    fi
+
+    echo "Flash/blink a nominated blinkstick a number of times
+
+    usage: $PROGRAM [-h] [color] [times]
+
+        -h    This help
+
+        default color is red, default times is 10
+
+        $PROGRAM green 5
+
+"
+    if [ "$arg" != "" ] ; then
+        echo "$arg
+"
+    fi
+    exit $err
+}
+
+# process command line args
+
+while getopts "h" OPTION ;do
+    case $OPTION in
+        h) show_usage ''
+        ;;
+        *) show_usage ''
+        ;;
+    esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
 color=$1
 : ${color:=red}
 
 times=$2
-: ${times: 10}
+: ${times:=10}
+
+echo $color >/tmp/flash_color
+
+# use the blinkstick strip
+stick -m 3 -b 15 --blink $times --color $color --device strip &
 
 cube clear $color : update : flash $times
-sleep $times
+# sleep $times
+
+

@@ -1,0 +1,90 @@
+#!/usr/bin/env perl
+# PODNAME: stickmqs
+# ABSTRACT: mosquito client, listens to /blinkstick/{name} and performs actions on the blinkstick
+
+=head1 NAME
+
+stickmqs
+
+=head1 SYNOPSIS
+
+Syntax: stickmqs [options]
+
+About:  light up blinkstick depending on what has been sent
+
+[options]
+    -h, -?, --help     Show help
+    --daemon           Run as a daemon
+    -v, --verbose      Dump extra useful information
+
+=head1 DESCRIPTION
+
+light up blinkstick depending on what has been sent
+See L<http://blinkstick.com> for devices
+
+=cut
+
+# (c) Kevin Mulholland, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+use Device::BlinkStick ;
+use AnyEvent::MQTT ;
+use WebColors ;
+use Time::HiRes qw(usleep) ;
+use JSON ;
+
+# -----------------------------------------------------------------------------
+
+use constant EMULATE_DELAY_USECS => 500 ;
+
+my $topic_prefix = '/blinkstick/' ;
+
+# -----------------------------------------------------------------------------
+
+sub perform_action
+{
+    my ( $stick, $data ) = @_ ;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my %opt = init_app(
+    help_text    => "",
+    help_cmdline => "",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'daemon|d'  => 'Run as a daemon',
+    },
+) ;
+
+my $bs = Device::BlinkStick->new() ;
+
+my $sticks = $bs->devices() ;
+
+if ( $opt{daemon} ) {
+    # parent should exit
+    exit(0) if ( !daemonise() ) ;
+}
+
+my $mqtt = AnyEvent::MQTT->new ;
+my $quit = AnyEvent->condvar ;
+my $cv   = $mqtt->subscribe(
+    topic    => $topic_prefix . '+',    # get all topics
+    callback => sub {
+        my ( $topic, $message ) = @_ ;
+        $topic =~ s/^$topic_prefix// ;
+        if ( $sticks->{$topic} ) {
+            say "$topic:  $message" ;
+        } else {
+            say "unknown device $topic" ;
+        }
+    }
+) ;
+# run and wait until told to finish
+$quit->recv ;
+

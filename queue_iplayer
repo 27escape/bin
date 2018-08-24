@@ -21,10 +21,10 @@
     > queue_iplayer --list
 
     to get full help use
-    > queue_iplayer --help   
+    > queue_iplayer --help
 
     yaml config file in ~/.queue_iplayer
-    
+
     tv:
       - the living planet
       - the plantagenets
@@ -47,106 +47,183 @@ L<iplayer> has the ability to suggest and record previously downloaded shows
 =cut
 
 #
-# (c) yourname, your@email.address.com
+# (c) kevin mulholland, kevin.perl@27escape.com
 # this code is released under the Perl Artistic License
 
-use 5.10.0;
-use strict;
-use warnings;
-use POSIX qw(strftime);
-use Data::Printer ;
-use App::Basis;
-use App::Basis::Config;
+# find bad matches
+# while IFS='' read -r line || [[ -n "$line" ]]; do
+#     echo "echo $line >>/tmp/gip.log" >>/tmp/gip.sh
+#     echo "get_iplayer --no-purge '$line' >>/tmp/gip.log" >>/tmp/gip.sh
+#     echo "echo '' >>/tmp/gip.log" >>/tmp/gip.sh
+# done < "/tmp/gip"
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use POSIX qw(strftime) ;
+use App::Basis ;
+use App::Basis::Config ;
+use Path::Tiny ;
+use YAML::Tiny::Color ;
 
 # -----------------------------------------------------------------------------
 
-my $IPLAYER_CMD = "$ENV{HOME}/bin/get_iplayer --no-purge ";
-my $verbose ;
+my $IPLAYER_CMD = "$ENV{HOME}/bin/get_iplayer --no-purge " ;
+my $PVR         = "~/.get_iplayer/pvr" ;
 
 # -----------------------------------------------------------------------------
-# basic debug to STDERR, redirect to anywhere you like
+sub build_queue
+{
+    my ($q) = @_ ;
+    my $queue ;
 
-sub other_debug {
-    my ( $lvl, $debug ) = @_;
-    return if( !$verbose) ;
-    if ( !$debug ) {
-        $debug = $lvl;
-
-        # set a default level
-        $lvl = 'INFO';
+    foreach my $e ( @{$q} ) {
+        next if ( !$e || ref($e) eq 'HASH' ) ;
+        $e =~ s/['"]//g ;
+        $queue .= "'$e' " ;
     }
 
-    say STDERR strftime( '%Y-%m-%d %H:%M:%S', gmtime( time() ) ) . " [$lvl] " . get_program() . " " . $debug;
+    return $queue ;
+}
+
+# -----------------------------------------------------------------------------
+# output the tested output
+sub test_out
+{
+    my ( $type, $text ) = @_ ;
+    say "$type:" ;
+
+    foreach my $l ( sort map { $1 if (/^(\d+:.*?$)/) ; } split( "\n", $text ) ) {
+        next if ( $l !~ /^(\d+):\s+(.*)/ ) ;
+        say sprintf( "  %5d:\t%s", $1, $2 ) ;
+    }
 }
 
 # -----------------------------------------------------------------------------
 # main
 
-my $program = get_program();
+my $program = get_program() ;
 
 my %opt = init_app(
     help_text    => "queue known tv/radio shows to iplayer pvr or add to the list and queue",
     help_cmdline => "optional show name to add",
     options      => {
         'verbose|v' => 'Dump extra useful information',
-        'type|c=s'  => {
+        'type|t=s'  => {
             default  => 'tv',
             desc     => 'type of show to add [tv|radio]',
-            validate => sub { my $val = shift; return $val =~ /tv|radio/i ; }
+            validate => sub { my $val = shift ; return $val =~ /tv|radio/i ; }
         },
-        'list|l' => 'list the config (and exit)',
+        'list|ls|l' => 'list the config (and exit)',
+        'test'      => 'test what should be recorded, do not record',
+        "remove|r"  => 'add show to remove list',
+        'queue|q'   => 'show whats in the current record queue',
     }
-);
-$verbose = $opt{verbose} ;
+) ;
 
-# set_debug( \&other_debug );
-debug( "INFO", "Started" );
+if ( $opt{queue} ) {
+    my $command = $IPLAYER_CMD . '--pvrlist' ;
+    my ( $ret, $out, $err ) = run_cmd($command) ;
 
-# lets have the config named after this program
-my $cfg = App::Basis::Config->new( filename => "$ENV{HOME}/.$program" );
-
-# example of using an app specifc config
-my $tv    = $cfg->get('/tv');
-my $radio = $cfg->get('/radio');
-my $show  = join( ' ', @ARGV );
-
-if ($show) {
-    if ( lc( $opt{type} ) eq 'radio' ) {
-        push @{$radio}, $show;
-        $cfg->set( "/radio", $radio );
+    foreach my $l ( sort split( /\n/, $out ) ) {
+        next if ( $l !~ /^pvrsearch = ONCE_(.*?)_[bp]\d+.*/ ) ;
+        $l = $1 ;
+        $l =~ s/_/ /g ;
+        $l =~ s/\s+-\s?//g ;
+        say $l ;
     }
-    else {
-        push @{$tv}, $show;
-        $cfg->set( "/tv", $tv );
-    }
-    $cfg->store();
+    exit ;
 }
 
-if( $opt{list}) {
-    say "Config\n======\n" . p($cfg->raw()) ;
-    exit( 0) ;
+# lets have the config named after this program
+my $cfg = App::Basis::Config->new( filename => "$ENV{HOME}/.$program" ) ;
+
+# example of using an app specifc config
+my $tv     = $cfg->get('/tv') ;
+my $radio  = $cfg->get('/radio') ;
+my $remove = $cfg->get('/remove') ;
+my $show   = join( ' ', @ARGV ) ;
+
+if ($show) {
+    if ( $opt{remove} ) {
+        $show =~ s/\s/_/g ; # get rid of spaces
+        push @{$remove}, $show ;
+        $cfg->set( "/remove", $remove ) ;
+        verbose("Adding show '$show' to remove queue") ;
+    } elsif ( lc( $opt{type} ) eq 'radio' ) {
+        verbose("Adding show '$show' to radio queue") ;
+        push @{$radio}, $show ;
+        $cfg->set( "/radio", $radio ) ;
+    } else {
+        verbose("Adding show '$show' to tv queue") ;
+        push @{$tv}, $show ;
+        $cfg->set( "/tv", $tv ) ;
+    }
+    # bug in config meaning that things are not set to be stored when they have changed
+    $cfg->changed(1) ;
+    $cfg->store() ;
+}
+
+if ( $opt{list} ) {
+    my $r = $cfg->raw() ;
+    say "Config\n " . Dump($r) ;
+    exit(0) ;
 }
 
 # first up we always add the scifi radio shows
-my $command = $IPLAYER_CMD . '--type=radio --category=scifi --search=.* --pvr-queue';
-debug( "INFO", "Adding scifi radio shows");
-my ( $ret, $out, $err ) = run_cmd($command);
-debug( "INFO", "result: $out") ;
+verbose("Finding radio scifi") ;
+my $command = $IPLAYER_CMD . '--type=radio --category=scifi --search=".*" --pvr-queue' ;
+my ( $ret, $out, $err ) = run_cmd($command) ;
 
 # do the tv shows
-my $queue;
-map { $queue .= '"' . $_ . '" ' } @{$tv};
-$queue |= '' ;
-$command = $IPLAYER_CMD . "--type=tv --pvr-queue $queue ";
-debug( "INFO", "Adding tv shows: $queue");
-( $ret, $out, $err ) = run_cmd($command);
-debug( "INFO", "result: $out") ;
+my $queue  = build_queue($tv) ;
+my $record = "--pvr-queue" ;
+if ( $opt{test} ) {
+    # don't allow pvr record if testing
+    $record = "" ;
+}
+if ($queue) {
+    verbose("Building tv queue") ;
+    $command = $IPLAYER_CMD . '--type=tv --search=".*" $record $queue ' ;
+    ( $ret, $out, $err ) = run_cmd($command) ;
+    if ( $opt{test} ) {
+        test_out( "tv", $out ) ;
+    }
+}
 
 # do the radio shows
-$queue = "";    # reset the queue
-map { $queue .= '"' . $_ . '" '  } @{$radio};
-$queue |= '' ;
-$command = $IPLAYER_CMD . "--type=radio --pvr-queue $queue ";
-debug( "INFO", "Adding radio shows: $queue");
-( $ret, $out, $err ) = run_cmd($command);
-debug( "INFO", "result: $out") ;
+$queue = build_queue($radio) ;
+if ($queue) {
+    verbose("Building radio queue") ;
+    $command = $IPLAYER_CMD . "--type=radio $record $queue " ;
+    ( $ret, $out, $err ) = run_cmd($command) ;
+    if ( $opt{test} ) {
+        test_out( "radio", $out ) ;
+    }
+}
+
+# now remove things from the queue that might have matched and we do not want
+# usually things from BBC scotland
+
+verbose("Checking for things to remove") ;
+my $phash = path($PVR)->visit(
+    sub {
+        my ( $path, $state ) = @_ ;
+        return if ( !$path->is_file ) ;
+
+        foreach my $f (@$remove) {
+            my $name = $path->basename ;
+
+            if ( $name =~ /$f/i ) {
+                if ( $opt{test} ) {
+                    verbose("Would Remove $name") ;
+                } else {
+                    verbose("Removing $name") ;
+                    $path->remove ;
+                }
+            }
+        }
+    },
+    { recurse => 0 }
+) ;
+

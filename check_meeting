@@ -11,7 +11,7 @@ color=$2
 
 # how often to flash
 times=$3
-: ${times: 10}
+: ${times:10}
 
 
 gcalcli --nocolor --nostarted remind $minutes "flash $color 10"

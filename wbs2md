@@ -1,0 +1,1599 @@
+#!/usr/bin/env perl
+
+# PODNAME: wbs2md
+# ABSTRACT: convert a work breakdown file into ct2 markdown
+
+=head1 NAME
+
+wbs2md
+
+=head1 SYNOPSIS
+
+    > wbs2md ..options.. wbs-file
+
+    to get full help use
+    > wbs2md --help
+
+=cut
+
+=head1 DESCRIPTION
+
+convert a work breakdown file into ct2 markdown
+
+tasks are in days, days are assumed to be business days and so will
+be converted to real periods
+
+=cut
+
+#
+# (c) kevin mulholland, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+# todo extra rules
+
+# if the node is a parent it needs be marked as such in the meta
+
+# if a parent node has a duration, then this will be evenly split between all
+# the child nodes, unless any single child has a duration, in which case that
+# will subtracted from the parent and the remaining shared (and repeat)
+
+# parent duration is a sum of its childrens durations
+
+# if there is no parent status, it is dereived from child statuses
+
+# parent status of done will mark children and sub children as done to - unless
+# the child status is cancelled/postponed/unknown
+
+use strict ;
+use warnings ;
+use feature 'state' ;
+use feature 'say' ;
+use App::Basis ;
+use App::Basis::Config ;
+use Bullet::Tree ;
+use WebColors ;
+use Path::Tiny ;
+use POSIX qw(strftime ceil) ;
+use Date::Manip ;
+use Furl ;
+use JSON::Tiny qw(decode_json) ;
+use feature qw(state) ;
+use Redmine::API ;
+use Data::Printer ;
+
+# attempt to force date::manip to use business dates
+Date_Init( "WorkDayBeg=08:00", "WorkDayEnd=17:00" ) ;
+
+# simple table printing for debugs
+use Text::Table::Tiny ;
+
+$Text::Table::Tiny::HEADER_CORNER_MARKER = '+' ;
+$Text::Table::Tiny::HEADER_ROW_SEPARATOR = '-' ;
+
+use Data::Printer colored => 1 ;
+
+# -----------------------------------------------------------------------------
+
+use constant DURATION => "5d" ;
+use constant START => strftime( "%Y-%m-%d", localtime( time() ) ) ;
+
+my $DATE_FORMAT  = '\d{4}-\d{2}-\d{2}' ;
+my $VALID_STATUS = 'active|done|notstarted|unknown' ;
+
+# simple table printing for debugs
+use Text::Table::Tiny ;
+
+$Text::Table::Tiny::HEADER_CORNER_MARKER = '+' ;
+$Text::Table::Tiny::HEADER_ROW_SEPARATOR = '-' ;
+
+use constant INDENT      => '    ' ;
+use constant INDENT_SIZE => length(INDENT) ;
+
+# -----------------------------------------------------------------------------
+
+my %master_tasks = () ;
+my %master_meta  = () ;
+my %master_todo  = () ;    # items that need some more processing
+
+my %orient = ( portrait => '700px', landscape => '1000px' ) ;
+
+my $redmine_server ;
+my $redmine_api ;
+
+# -----------------------------------------------------------------------------
+# get details about a redmine issue
+sub _get_redmine
+{
+    my ($issue) = @_ ;
+    state $base_url ;
+    state $furl ;
+
+    my $ticket ;
+
+    if ( !$furl ) {
+
+        $furl = Furl->new(
+            agent   => get_program() . '/1.0',
+            timeout => 10,
+            headers => [ 'Accept' => "application/json" ],
+        ) ;
+    }
+    my $rm = $redmine_api->issues->list->get($issue) ;
+
+    if ($rm) {
+
+        # say "redmine $issue: ", p( $rm->{issue}) ;
+
+        $ticket->{status}      = $rm->{issue}->{status}->{name} ;
+        $ticket->{orig_status} = $rm->{issue}->{status}->{name} ;
+
+        if ( $ticket->{status} eq 'New' ) {
+            $ticket->{status} = 'notstarted' ;
+        } elsif ( $ticket->{status} eq '"Feedback' ) {
+            $ticket->{status} = 'unknown' ;
+        } elsif ( $ticket->{status} eq ' Rejected' ) {
+            $ticket->{status} = 'postponed' ;
+        } elsif ( $ticket->{status} =~ /In Progress|Reopened|Reviewing|Reviewed|Demonstrated/ ) {
+            $ticket->{status} = 'active' ;
+        } elsif ( $ticket->{status} =~ /Resolved|Fixed Verified|Closed|Completed/ ) {
+            $ticket->{status} = 'done' ;
+        } else {
+            say STDERR "Unknown status $ticket->{status} for issue $issue" ;
+            $ticket->{status} = 'notstarted' ;
+        }
+
+        $ticket->{percent} = $rm->{issue}->{done_ratio} || 0 ;
+
+        # another override
+        $ticket->{status} = 'done' if ( $ticket->{percent} == 100 ) ;
+        $ticket->{percent} = 100
+            if ( !$ticket->{percent} && $ticket->{status} eq 'done' ) ;
+        $ticket->{percent} ||= '0' ;
+        $ticket->{type}    = $rm->{issue}->{tracker}->{name} ;
+        $ticket->{subject} = $rm->{issue}->{subject} ;
+        $ticket->{updated} = $rm->{issue}->{updated_on} ;
+        $ticket->{updated} =~ s/[TZ]/ /g ;
+
+        # say "issue $issue: ", p($ticket) ;
+    }
+
+    return $ticket ;
+}
+
+# -----------------------------------------------------------------------------
+
+sub _convert_days
+{
+    my ($days) = @_ ;
+
+    return 0 if ( !$days ) ;
+
+    $days =~ s/d// ;
+    if ( $days =~ /(\d+)\s?w/ ) {
+        $days = $1 * 5 ;
+    }
+    return $days ;
+}
+
+# -----------------------------------------------------------------------------
+sub _decide_status
+{
+    my ( $current, $other ) = @_ ;
+
+    return $current if ( $other =~ /cancelled|postponed|unknown/ ) ;
+
+    if ( !$current ) {
+        $current = $other ;
+    } elsif ( $current eq 'notstarted' && $other =~ /done|active/ ) {
+        $current = 'active' ;
+    } elsif ( $current eq 'done' && $other =~ /active|notstarted/ ) {
+        $current = 'active' ;
+    }
+    return $current ;
+}
+
+# -----------------------------------------------------------------------------
+# this is to extract data, not to make calculations on the data
+# so we do not calc the end date given a start date and duration etc.
+# however we will calc the duration if there is a start and end date
+
+# [ (status) (percent) (critical | milestone] (id) (start) (end | duration) ]
+
+sub _extract_data
+{
+    state $tasknum = 1 ;
+    my ( $data, $status, $duration ) = @_ ;
+
+    my $name = $data->{name} ;
+
+    if ($status) {
+        $status =~ s/^\s?|\s?$//g ;
+        if ( $status eq 'x' ) {
+            $data->{status} = 'done' ;
+        } elsif ( $status eq '>' ) {
+            $data->{status} = 'active' ;
+
+        } elsif ( $status eq '-' ) {
+            $data->{status} = 'cancelled' ;
+        } elsif ( $status eq '~' ) {
+            $data->{status} = 'postponed' ;
+        } elsif ( $status eq '?' ) {
+            $data->{status} = 'unknown' ;
+        } elsif ( $status =~ /(\d+)/ ) {
+            $data->{percent} = $1 ;
+            $data->{status} = 'done' if ( $data->{percent} == 100 ) ;
+        } elsif ($status) {
+            warn "Unknown status [$status]" ;
+        }
+    }
+
+    # lets try some of the 'old style' commands
+    # these are useful as they give us dates when things happend
+    if ( $name =~ /\@\w+/ ) {
+        while (
+            $name =~ s/\@(postponed|cancelled|removed|started|done)\s?\(\s?($DATE_FORMAT)\s?\)// ) {
+            my ( $s, $date ) = ( $1, $2 ) ;
+            # my $d = Date::Manip::Date->new($date) ;
+            if ( $s eq 'started' ) {
+                $data->{started} = 1 ;
+            } elsif ( $s eq 'done' ) {
+                $data->{status} = 'done' ;
+                $data->{ended}  = 1 ;
+            }
+            # else {
+            #     $data->{ $s . "_date" } = $d ;
+            # }
+        }
+
+        if ( $name =~ s/\@duration\s?\((.*?)\)// ) {
+            $data->{duration} = _convert_days($1) ;
+        }
+
+        # remove these known things that are no longer relevant
+        $name =~ s/\@(lasted|toend|tostart|due)\s?\((.*?)\)//g ;
+
+        # keep track of who is doing it, that should be any remaining @word
+        while ( $name =~ s/\@(\w+)// ) {
+            push @{ $data->{who} }, $1 ;
+        }
+
+        # finally decide if we are active or not
+        $data->{status} = 'active'
+            if ( $data->{started} && !$data->{ended} ) ;
+    }
+
+    if ( $name =~ s/\[(.*)\]// ) {
+        my $wbs = $1 ;
+
+        # remine numbers are like #12345
+        if ( $wbs =~ s/\#(\d+)// ) {
+            $data->{redmine}        = $1 ;
+            $data->{redmine_ticket} = _get_redmine( $data->{redmine} ) ;
+        }
+
+        if ( $wbs =~ s/\b(active|done|cancelled|postponed|removed)\b//i ) {
+            $data->{status} = lc($1) ;
+        }
+        if ( $wbs =~ s/(\d+)%// ) {
+            $data->{percent} = $1 ;
+        } else {
+            $data->{percent} = 0 ;
+        }
+        if ( $data->{status} && $data->{status} eq 'done' ) {
+            $data->{percent} = '100' ;
+        }
+
+        if ( $data->{redmine_ticket} ) {
+
+            # lets over-ride the status in the WBS with the redmine ticket
+            $data->{percent} = $data->{redmine_ticket}->{percent} ;
+            $data->{status}  = $data->{redmine_ticket}->{status} ;
+
+            $data->{duration} = $data->{redmine_ticket}->{duration}
+                if ( $data->{redmine_ticket}->{duration} ) ;
+        }
+
+        # we will only override status on percent=100
+        # if the task is active or there is no status
+        if (( $data->{percent} && $data->{percent} eq '100' )
+            && (  !$data->{status}
+                || $data->{status} eq 'active' )
+            ) {
+            $data->{status} = "done" ;
+        }
+
+        if ( $wbs =~ s/\bcritical\b//i ) {
+            $data->{critical} = 1 ;
+        }
+        if ( $wbs =~ s/\bmilestone\b//i ) {
+            $data->{milestone} = 1 ;
+        }
+        if ( $wbs =~ s/(\d+d|\d+w)//i ) {
+            $data->{duration} = _convert_days($1) ;
+        }
+
+        my ( $depends, $id ) ;
+        if ( $wbs =~ s/\b(after|before|same)\s?([\w_-]+)//i ) {
+            ( $depends, $id ) = ( $1, $2 ) ;
+            $data->{depends} = "$depends $id" ;
+        }
+
+        # the first date is the start date, lets ignore it
+        $wbs =~ s/($DATE_FORMAT)// ;
+
+        # any remaining date must be the end date
+        # remove it
+        $wbs =~ s/($DATE_FORMAT)//i ;
+
+        $wbs =~ s/^\s+|\s+$//g ;    # trim
+                                    # first word of anything left is the id
+        if ( $wbs =~ s/^([\w_-]+)//i ) {
+            $data->{id} = $1 ;
+        }
+    }
+    if ( $name =~ s/\s?:\s?(.*)// ) {
+        $data->{"name-comment"} = $1 ;
+    }
+
+    # make up an ID if there is not one there
+    if ( !$data->{id} ) {
+        $data->{id} = "task-$tasknum" ;
+        $tasknum++ ;
+    }
+
+    $name =~ s/^\s+|\s+$//g ; # trim
+    $name =~ s/,/&#44;/g ;    # expand commas to HTML versions, ensures CSV tables display correctly
+    $data->{name} = $name ;
+
+    $data->{status} ||= 'notstarted' ;
+}
+
+# -----------------------------------------------------------------------------
+# count the kids, if the kids are parents then those need to be recalculated down
+# returns the duration
+sub _count_kids_durations
+{
+    my ( $tree, $duration ) = @_ ;
+
+    # traverse the tree, finding parents with duration and sharing it between
+    # its children, as much as possible, ignore postponed or cancelled items
+    foreach my $meta ( $tree->traverse() ) {
+        next if ( !$meta->{isparent} ) ;
+
+        # skip things that are not relevant
+        next if ( !$meta->{data}->{duration} ) ;
+
+        my @kids = $tree->children( $meta->{path} ) ;
+        my $d    = $meta->{data}->{duration} ;
+        my @process ;
+
+        # find out if kids have duration set and remove that from parent
+        foreach my $kmeta (@kids) {
+            next
+                if ( $kmeta->{data}->{status} !~ /$VALID_STATUS/ ) ;
+
+            if ( $kmeta->{data}->{duration} ) {
+                $d -= $kmeta->{data}->{duration} ;
+            } else {
+
+                # save the ones that need duration
+                push @process, $kmeta ;
+            }
+        }
+    }
+
+}
+
+# -----------------------------------------------------------------------------
+# durations for children to be based on parents
+# durations for parents are sum of children
+# missing durations get a default
+
+sub _recalc_durations
+{
+    my ( $tree, $duration ) = @_ ;
+
+    # traverse the tree, finding parents with duration and sharing it between
+    # its children, as much as possible, ignore postponed or cancelled items
+    foreach my $meta ( $tree->traverse() ) {
+        next if ( !$meta->{isparent} ) ;
+
+        # skip things that are not relevant
+        next if ( !$meta->{data}->{duration} ) ;
+
+        my @kids = $tree->children( $meta->{path} ) ;
+        my $d    = $meta->{data}->{duration} ;
+        my @process ;
+
+        # find out if kids have duration set and remove that from parent
+        foreach my $kmeta (@kids) {
+            next
+                if ( $kmeta->{data}->{status} !~ /$VALID_STATUS/ ) ;
+
+            if ( $kmeta->{data}->{duration} ) {
+                $d -= $kmeta->{data}->{duration} ;
+            } else {
+
+                # save the ones that need duration
+                push @process, $kmeta ;
+            }
+        }
+
+        # if there is any duration left, share between the kids
+        if ( $d && scalar(@process) ) {
+            $d = $d / scalar(@process) ;
+            if ( $d =~ /\./ ) {
+                $d = sprintf( "%.2f", $d ) ;
+                $d =~ s/0?$//g ;
+            }
+
+            foreach my $kmeta (@process) {
+                if ( !$kmeta->{data}->{duration} ) {
+                    $kmeta->{data}->{duration} = $d ;
+                }
+            }
+        } else {
+
+            # kids duration exceeds parents, which must now be considered
+            # irrelevant so lets dump it to get calculated later
+            delete $meta->{data}->{duration} ;
+        }
+    }
+
+    # parents should add up their childrens durations
+    foreach my $meta ( $tree->traverse() ) {
+        next
+            if ( !$meta->{data}->{isparent}
+            || $meta->{data}->{status} !~ /$VALID_STATUS/ ) ;
+
+        my @kids = $tree->children( $meta->{path} ) ;
+        my $dur  = 0 ;
+        foreach my $child (@kids) {
+            # if( ) {
+            #     $dur += _count_() ;
+            # } else {
+            #     $dur += $chi
+            # }
+
+        }
+        # $meta->{data}->{duration} = $dur ;
+    }
+
+    # anything now without a duration should get a default
+    foreach my $meta ( $tree->traverse() ) {
+
+        # skip things that are not relevant
+        next
+            if ( $meta->{data}->{duration}
+            || $meta->{data}->{status} !~ /$VALID_STATUS/ ) ;
+
+        # set the default if nothing else
+        $meta->{data}->{duration} = $duration ;
+
+        # we have been processed, make sure we are not in the todo list
+        delete $master_todo{ $meta->{path} } ;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# we need to traverse the tree setting child node status to match
+# their parents unless they have their own status already
+# only for active?
+sub _adjust_statuses
+{
+    my ($tree) = @_ ;
+
+    # set child status from parent (cancelled/postponed/unknown)
+    foreach my $meta ( $tree->traverse() ) {
+        next if ( !$meta->{isparent} ) ;
+        next if ( $meta->{data}->{status} !~ /cancelled|postponed|unknown/ ) ;
+
+        foreach my $cmeta ( $tree->decendants( $meta->{path} ) ) {
+            if ( $cmeta->{data}->{status} !~ /active|done/ ) {
+                $cmeta->{data}->{status} = $meta->{data}->{status} ;
+            }
+        }
+    }
+
+    # set parent status from child (active/done)
+    foreach my $meta ( $tree->traverse() ) {
+        next if ( !$meta->{isparent} ) ;
+
+        my %status = () ;
+        foreach my $cmeta ( $tree->decendants( $meta->{path} ) ) {
+            $status{ $cmeta->{data}->{status} }++ ;
+        }
+        my @k = keys(%status) ;
+
+        # if everything agrees
+        if ( scalar(@k) == 1 ) {
+            $meta->{data}->{status} = $k[0] ;
+        } else {
+
+            # work out the combination
+            if ( ( $status{done} || $status{active} )
+                && !( $status{cancelled} || $status{postponed} || $status{unknown} ) ) {
+                # cannot over-ride parent specials
+                if ( $meta->{data}->{status} !~ /cancelled|postponed|unknown/ ) {
+                    $meta->{data}->{status} = 'active' ;
+                }
+            }
+        }
+    }
+
+    # now calc status of entire tree
+    my $status = '' ;
+
+    # set child status from parent (cancelled/postponed/unknown)
+    foreach my $meta ( $tree->traverse() ) {
+        $status = _decide_status( $status, $meta->{data}->{status} ) ;
+    }
+
+    $status ||= 'notstarted' ;
+    $tree->{data}->{status} = $status ;
+}
+
+# -----------------------------------------------------------------------------
+# we need to traverse the tree setting child node status to match
+# their parents unless they have their own status already
+# only for active?
+sub _adjust_percents
+{
+    my ($tree) = @_ ;
+
+    # set child status from parent (cancelled/postponed/unknown)
+    foreach my $meta ( $tree->traverse() ) {
+
+        # next if ( !$meta->{isparent} ) ;
+        next if ( $meta->{data}->{status} =~ /cancelled|postponed|unknown/ ) ;
+
+        my ( $count, $perc, $done ) = ( 0, 0, 0 ) ;
+        foreach my $cmeta ( $tree->decendants( $meta->{path} ) ) {
+            next
+                if ( $cmeta->{data}->{status} =~ /cancelled|postponed|unknown/ ) ;
+            if ( $cmeta->{data}->{status} eq 'done' ) {
+                $cmeta->{data}->{percent} = "100" ;
+                $done++ ;
+            }
+
+            # should not count parents as they are calculated from the children
+            # we would be double counting - a bad thing (tm)
+            if ( !$cmeta->{isparent} ) {
+                $perc += $cmeta->{data}->{percent} || 0 ;
+                $count++ ;
+            }
+        }
+        if ($count) {
+            $meta->{data}->{percent} =
+                int( $perc / $count ) ;
+        }
+        $meta->{data}->{percent} .= "%" if ( $meta->{data}->{percent} ) ;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# the first child of a parent needs to start at the same time as the parent
+# if it does not have any other dependencies
+sub _calc_starts
+{
+    my ($tree) = @_ ;
+
+    foreach my $meta ( $tree->traverse() ) {
+        next if ( $meta->{data}->{status} =~ /cancelled|postponed|unknown/ ) ;
+
+        foreach my $cmeta ( $tree->decendants( $meta->{path} ) ) {
+            next
+                if ( $cmeta->{data}->{status} =~ /cancelled|postponed|unknown/ ) ;
+            if ( !$cmeta->{data}->{depends} ) {
+                $cmeta->{data}->{depends} = "same $meta->{data}->{id}" ;
+            }
+            last ;    # no need to calculate any others
+        }
+    }
+}
+
+
+# -----------------------------------------------------------------------------
+
+# name
+# data - arrayref of lines
+# duration - how long is a task item with out a stated duration
+# start  - start date if there is no start stated/implied within the task
+# block_line - where did this block of data start in the input file
+
+sub _build_task_tree
+{
+    my $params =
+        @_ % 2
+        ? die "Odd number of values passed where even is expected."
+        : {@_} ;
+
+    if ( $master_tasks{ $params->{name} } ) {
+        die "$params->{name} has already been defined" ;
+    }
+
+    $params->{duration} = _convert_days( $params->{duration} )
+        if ( $params->{duration} ) ;
+
+    # make sure we start on a biz day
+    my $start = Date::Manip::Date->new( $params->{start_date} ) ;
+    $start->nearest_business_day(1) ;
+
+    my $tree = Bullet::Tree->new(
+        data => {
+            content    => "",
+            name       => $params->{name},
+            indent     => 0,
+            start_date => $start,
+
+            # this is the default for the tree, not the task duration - yet!
+            duration => $params->{duration},
+        }
+    ) ;
+
+    my $section ;
+    my $path = 'root' ;
+    my $current_line =
+        $params->{block_line} - scalar( @{ $params->{data} } ) + 1 ;
+
+    my $inblock = 0 ;
+    foreach my $l ( @{ $params->{data} } ) {
+        $current_line++ ;
+
+        # make sure we handle blocks attached to the task
+        if ( $l =~ /^~~~~/ || $inblock ) {
+            my $meta = $tree->meta($path) ;
+            $meta->{data}->{content} .= "$l\n" ;
+
+            if ( $l =~ /^~~~~/ && $inblock ) {
+
+                # make sure there is always whitespace after the block
+                $meta->{data}->{content} .= "\n" ;
+                $inblock = 0 ;
+            } else {
+                $inblock = 1 ;
+            }
+            next ;
+        }
+
+        if ( $l =~ /^(\s*)?\[(.*?)\]\s?(.*)\s?$/ ) {
+            my ( $spaces, $status, $name ) = ( $1, $2, $3 ) ;
+
+            if ( !$spaces ) {
+
+                # section name cannot include the useful stuff
+                $section = $name ;
+                $section =~ s/:.*// ;
+                $section =~ s/\[.*?\]// ;
+                $section =~ s/\@\w+\s?\(.*?\)//g ;
+                $section =~ s/\@\w+//g ;
+                $section =~ s/^\s+|\s+$//g ;
+            }
+
+            my $data = {
+                content => "",
+                name    => $name,
+                section => $section,
+
+                # keep track of where item was declared
+                line => $current_line,
+            } ;
+
+            $status =~ s/^\s+|\s+$//g ;    # trim
+                                           # meta that is set is the meta of the added child/sibling
+                                           # and this is the data we will change
+            _extract_data( $data, $status, $params->{duration} ) ;
+
+            # add this thing to the tree
+            $path = $tree->add( "$spaces* $name", $data ) ;
+
+            if ( $data->{id} ) {
+                if ( $master_meta{ $data->{id} } ) {
+                    my $other = $master_meta{ $data->{id} } ;
+                    my $msg =
+                        "\n\nError on line $current_line - **Task ID $data->{id} has already been declared** on line $other->{data}->{line}\n\n"
+                        ;
+                    die $msg ;
+                    my $meta = $tree->meta($path) ;
+                    $meta->{data}->{content} .= $msg ;
+                } else {
+                    $master_meta{ $data->{id} } = $tree->meta($path) ;
+                }
+            }
+        } else {
+
+            # normal bulleted items become italicised
+            $l =~ s|^(\s+)([*+-])(\s?)(.*)|$1*$3<span style='font-style:italic;'>$4</span>| ;
+
+            # any header sections need to be set one level deeper
+            $l =~ s/^#/##/ ;
+
+            my $meta = $tree->meta($path) ;
+            $meta->{data}->{content} .= "$l\n" ;
+        }
+    }
+
+    # add into the master
+    $master_tasks{ $params->{name} } = $tree ;
+
+    # need to repeatedly traverse the tree setting the time and dates
+    # based on parents and siblings and any referenced id's
+
+    _calc_starts($tree) ;    # set first child start same as parent
+    _recalc_durations( $tree, $params->{duration} ) ;
+
+    # get the overall duration
+    my $root = $tree->meta('root') ;
+    _adjust_statuses($tree) ;    # set some parent statuses from their childrens
+    _adjust_percents($tree) ;
+
+    # calc over all percentage and overall duration
+
+    return $tree ;
+}
+
+# -----------------------------------------------------------------------------
+
+my $LAYOUT = "list map activity" ;
+
+# make use of material colors, convert to hex so that things link mindmap work
+# correctly
+sub _get_color
+{
+    return colorname_to_hex(shift) ;
+}
+
+# foreground, background colors to highlight status
+my %status_colors = (
+    done       => [ _get_color('black'), _get_color('green300') ],
+    active     => [ _get_color('black'), _get_color('orange200') ],
+    postponed  => [ _get_color('black'), _get_color('lightbluea100') ],
+    cancelled  => [ _get_color('black'), _get_color('brown300') ],
+    unknown    => [ _get_color('black'), _get_color('bluegrey300') ],
+    notstarted => [ _get_color('black'), _get_color('red300') ],
+
+    # critical   => [ _get_color('black'), _get_color('deeppurple200') ],
+    critical  => [ _get_color('black'), _get_color('crimson') ],
+    milestone => [ _get_color('black'), _get_color('amber900') ],
+) ;
+
+# these are the names of the sections that will be created in the document
+my %layouts = (
+    list     => 'Task Items',
+    overview => 'Task Overview',
+    level1   => 'Task Items - Top Level only',
+    level2   => 'Task Items - Reduced Detail',
+    map      => 'Task Map',
+    project  => 'Project Timeline',
+    timeline => 'Project Timeline',
+    activity => 'Activity Detail',
+    debug    => 'Debug',
+) ;
+
+my %reports = (
+    list     => \&_tree_to_csvtable_basic,
+    level1   => \&_tree_to_csvtable_level1,
+    level2   => \&_tree_to_csvtable_level2,
+    overview => \&_tree_to_csvtable_overview,
+    activity => \&_tree_to_activity,
+    map      => \&_tree_to_map,
+    project  => \&_tree_to_project,
+    timeline => \&_tree_to_project,
+    debug    => \&_tree_to_debug,
+) ;
+
+# -----------------------------------------------------------------------------
+# make hex triplets 6 digits
+sub _expand_hex_color
+{
+    my $c = shift ;
+
+    $c =~ s/^([0-9a-f])([0-9a-f])([0-9a-f])$/$1$1$2$2$3$3/i ;
+    return $c ;
+}
+
+# -----------------------------------------------------------------------------
+# make sure hex colors work too
+sub _to_hex
+{
+    my $c = shift ;
+
+    if ($c) {
+        $c =~ s/^([0-9a-f])([0-9a-f])([0-9a-f])$/#$1$1$2$2$3$3/i ;
+        $c =~ s/^([0-9a-f]{6})$/#$1/i ;
+    }
+
+    return $c ;
+}
+
+# -----------------------------------------------------------------------------
+# decide on a color for an item
+# returns foreground, background colors for given node's status
+sub _pick_color
+{
+    my ($meta) = @_ ;
+    my $status = $meta->{data}->{status} || "notstarted" ;
+
+    my @color ;
+    if ($status) {
+        @color = @{ $status_colors{$status} } ;
+    }
+
+    # milestones and criticals only important when we have not reached them
+    if ( $status !~ /active|done/ ) {
+        if ( $meta->{data}->{milestone} ) {
+            @color = @{ $status_colors{milestone} } ;
+        } elsif ( $meta->{data}->{critical} ) {
+            @color = @{ $status_colors{critical} } ;
+        }
+    }
+    return @color ;
+}
+
+# -----------------------------------------------------------------------------
+sub color_style_from_bg
+{
+    my $status = shift ;
+    my $style  = "" ;
+
+    my @colors = @{ $status_colors{$status} } ;
+
+    if ( $colors[1] ) {
+        $style .= "color: " . _to_hex( $colors[1] ) . ";" ;
+    } elsif ( $colors[0] ) {
+        $style .= "color: " . _to_hex( $colors[0] ) . ";" ;
+    }
+
+    return $style ;
+}
+
+# -----------------------------------------------------------------------------
+
+sub _key_table
+{
+    my $out = "<table border='1' width='99%' class='box'><tr>" ;
+
+    foreach my $k ( sort keys %status_colors ) {
+        my @colors = @{ $status_colors{$k} } ;
+        my $style  = "" ;
+
+        $style .= "color: " . _to_hex( $colors[0] ) . ";"
+            if ( $colors[0] ) ;
+        $style .= "background-color: " . _to_hex( $colors[1] ) . ";"
+            if ( $colors[1] ) ;
+
+        $out .= "<td style='$style'>" . ucfirst($k) . "</td>" ;
+    }
+
+    $out .= "</tr></table>\n" ;
+    return $out ;
+}
+
+# -----------------------------------------------------------------------------
+
+sub _badge_status
+{
+    my ( $meta, $percent ) = @_ ;
+
+    my %badges = (
+        done       => '&#10004;',
+        postponed  => '&#8734;',
+        cancelled  => '&#10008;',
+        active     => '&#187;',
+        unknown    => '?',
+        notstarted => '&nbsp;&nbsp;'
+    ) ;
+
+    my $text    = $badges{ $meta->{data}->{status} } ;
+    my @colors  = _pick_color($meta) ;
+    my $subject = $meta->{path} ;
+    my $color   = "#" . ( $colors[0] ? $colors[0] : '' ) . ( $colors[1] ? ".$colors[1]" : '' ) ;
+
+    # not using this at the moment until I figure out how the colors go wrong
+    # $text .= _percent_bar( $meta->{data}->{percent}) if( $percent) ;
+
+    return "{{.badge subject='$subject' status='$text' color='$color' size='70' reverse=0}} " ;
+}
+
+# -----------------------------------------------------------------------------
+# convert duration number into days or weeks string
+
+sub _nice_duration
+{
+    my ($duration) = @_ ;
+
+    $duration ||= 1 ;
+
+    if ( $duration <= 20 ) {
+        $duration .= "d" ;
+    } else {
+        my $w = int( $duration / 5 ) ;
+        my $d = $duration % 5 ;
+        $duration = $w . "w" . ( $d ? ( $d . "d" ) : "" ) ;
+    }
+    return $duration ;
+}
+
+# -----------------------------------------------------------------------------
+# consistent way to add a redmine ticket to some output
+sub _redmine_info
+{
+    my ( $rm, $ticket, $type ) = @_ ;
+    my $out = "" ;
+
+    return "" if ( !$rm ) ;
+
+    if ( !$type || !$ticket ) {
+        $out = " [#$rm]($redmine_server/issues/$rm)" ;
+    } else {
+        $out = "<font style='font-size:75%;'>[Redmine #$rm]("
+            . "$redmine_server/issues/$rm) \"$ticket->{subject}\" ($ticket->{type} - $ticket->{orig_status})</font>"
+            ;
+    }
+    return $out ;
+}
+
+# -----------------------------------------------------------------------------
+
+# convert the tree to csv, picks the most useful fields
+sub _tree_to_csvtable
+{
+    my ( $tree, $width, $list, $level ) = @_ ;
+    my @items = qw(item dep name dates time done who) ;
+
+    # also check if list is arrayref?
+    if ($list) {
+        @items = @$list ;
+    }
+    my $out =
+          "~~~~{.table legends=1 class=box width='99%' zebra=1}\n"
+        . join( ",", map { ucfirst($_) } @items )
+        . "\n" ;
+    my %fix = (
+        item => 'path',
+        days => 'duration',
+        time => 'duration',
+        dep  => 'depends',
+        done => 'percent',
+    ) ;
+    my $root = $tree->meta('root') ;
+
+    foreach my $meta ( $tree->traverse() ) {
+        next
+            if ( $meta->{data}->{status}
+            && $meta->{data}->{status} !~ /$VALID_STATUS/ ) ;
+
+        if ($level) {
+            next if ( $level == 1 && $meta->{path} !~ /^\d+\.0$/ ) ;
+            next if ( $level == 2 && $meta->{path} !~ /^\d+\.\d+$/ ) ;
+        }
+
+        $out .= join(
+            ",",
+            map {
+                my $field = $_ ;
+                $field = $fix{$field} if ( $fix{$field} ) ;
+
+                my $item = "" ;
+
+                if ( $field ne 'path' && !$meta->{data}->{$field} ) {
+                    "&nbsp;" ;
+                } else {
+                    if ( $field eq 'name' ) {
+                        if ( $meta->{data}->{section} eq $meta->{data}->{name} ) {
+                            $item = "**$meta->{data}->{name}**" ;
+                        } else {
+                            $item = ("&nbsp;&nbsp;&nbsp;&nbsp;") x $meta->{indent}
+                                . $meta->{data}->{name} ;
+                        }
+                        if ( $meta->{data}->{redmine} ) {
+                            $item .= _redmine_info( $meta->{data}->{redmine},
+                                $meta->{data}->{redmine_ticket} ) ;
+                        }
+                        $item = "<span style='font-size:75%;'>$item</span>" ;
+                    } elsif ( $field eq 'path' ) {
+
+                        # $item = "$meta->{path}" ;
+                        $item = _badge_status($meta) ;
+                        if ( $meta->{data}->{milestone} ) {
+                            $item .= "^<span style='font-size:50%;'>**M**</span>^" ;
+                        }
+                        if ( $meta->{data}->{critical} ) {
+                            $item .= "^<span style='font-size:50%;'>**C**</span>^" ;
+                        }
+                        # $item .= "<br><span style='font-size:75%;'>**$meta->{data}->{id}**</span>"
+                        #     if ( $meta->{data}->{id}
+                        #     && $meta->{data}->{id} !~ /^task-/ ) ;
+                        $item .= "{-}" ;
+                    } elsif ( $field eq 'duration' ) {
+
+                        # $item = ("&nbsp;&nbsp;") x $meta->{indent}
+                        #     . _nice_duration( $meta->{data}->{$field} ) ;
+                        $item = _nice_duration( $meta->{data}->{$field} ) ;
+                        $item = "<span style='font-size:75%;'>$item</span>" ;
+                    } elsif ( $field eq 'who' ) {
+                        $item = join( " ", @{ $meta->{data}->{$field} } ) ;
+                        $item = "<span style='font-size:75%;'>$item</span> {-}" ;
+                    } elsif ( $field eq 'depends' ) {
+                        $item = $meta->{data}->{$field} ;
+                        $item
+                            =~ s/^(\w+) ([\w_-]+)/<span style='font-size:75%;'>*$1*<br>**$2**<\/span>/
+                            ;
+                    } elsif ( $field eq 'percent' ) {
+                        my $percent = $meta->{data}->{$field} ;
+                        $percent =~ s/%// ;
+                        $percent = int($percent) ;
+                        $item    = "{{.percent value=$percent trigger=1 width=50px}}" ;
+                        $item    = "<span style='font-size:75%;'>$item</span>{-}" ;
+                    } else {
+                        $item = $meta->{data}->{$field} ;
+                        $item = "<span style='font-size:75%;'>$item</span>" ;
+                    }
+                    $item || "&nbsp;" ;
+                }
+            } @items
+        ) ;
+
+        $out .= "\n" ;
+    }
+    $out .= "~~~~\n\n" ;
+
+    return $out ;
+}
+
+# -----------------------------------------------------------------------------
+# convert the tree to csv, picks the most useful fields
+sub _tree_to_csvtable_basic
+{
+    my ( $tree, $width ) = @_ ;
+    my @items = qw(item dep name time who) ;
+
+    return _tree_to_csvtable( $tree, $width, \@items ) ;
+}
+
+# -----------------------------------------------------------------------------
+# convert the tree to csv, picks the most minimum fields
+sub _tree_to_csvtable_overview
+{
+    my ( $tree, $width ) = @_ ;
+    my @items = qw(item name percent) ;
+
+    return _tree_to_csvtable( $tree, $width, \@items ) ;
+}
+
+# -----------------------------------------------------------------------------
+# convert the tree to csv, picks the most minimum fields
+sub _tree_to_csvtable_level1
+{
+    my ( $tree, $width ) = @_ ;
+    my @items = qw(item name time) ;
+
+    return _tree_to_csvtable( $tree, $width, \@items, 1 ) ;
+}
+
+# -----------------------------------------------------------------------------
+# convert the tree to csv, picks the most minimum fields
+sub _tree_to_csvtable_level2
+{
+    my ( $tree, $width ) = @_ ;
+    my @items = qw(item name time) ;
+
+    return _tree_to_csvtable( $tree, $width, \@items, 2 ) ;
+}
+
+# -----------------------------------------------------------------------------
+# make people standout
+sub _tag_who
+{
+    my ($who) = @_ ;
+
+    return
+        "<span style='font-size:0.7em;background-color:#FFFC94;border:1px solid #FFF176;border-radius:2px;'> "
+        . $who
+        . " </span>" ;
+}
+
+# -----------------------------------------------------------------------------
+# make dome dates standout
+sub _highlite_change
+{
+    my ( $type, $date, $line ) = @_ ;
+    my %status = (
+        "~" => { status => 'postponed', note => 'POSTPONED' },
+        "+" => { status => 'active',    note => 'UPDATED' },
+        "-" => { status => 'cancelled', note => 'REMOVED' }
+    ) ;
+    my $c = $status_colors{ $status{$type}->{status} } ;
+
+    return "<c:#$c->[0].$c->[1]> **$status{$type}->{note}: $date** $line </c>" ;
+}
+
+# -----------------------------------------------------------------------------
+# convert the tree to an activity, picks the most useful fields
+sub _tree_to_activity
+{
+    my ( $tree, $width ) = @_ ;
+    my $out = "" ;
+
+    foreach my $meta ( $tree->traverse() ) {
+
+        # we just want the background color
+        my @colors = _pick_color($meta) ;
+        my $style  = "font-weight:bold;" ;
+
+        $style .= 'text-decoration:line-through;'
+            if ( $meta->{data}->{status}
+            && $meta->{data}->{status} eq 'cancelled' ) ;
+
+        $out .= INDENT x $meta->{indent} ;
+        $out .= '* ' . _badge_status( $meta, 1 ) ;
+        $out .= "<span style='$style'>&nbsp;" if ($style) ;
+
+        # $out .= "$meta->{path} " ;
+        # if ( $meta->{data}->{id} && $meta->{data}->{id} !~ /^task-/ ) {
+        #     $out .= "($meta->{data}->{id}) " ;
+        # }
+
+        if ( $meta->{data}->{milestone} ) {
+            my $c = color_style_from_bg('milestone') ;
+            $out .= "<span style='$c'>milestone</span> " ;
+        }
+        if ( $meta->{data}->{critical} ) {
+            my $c = color_style_from_bg('critical') ;
+            $out .= "<span style='$c'>critical</span> " ;
+        }
+        my $percent = $meta->{data}->{percent} // 0 ;
+        $percent =~ s/%// ;
+        $percent = int($percent) ;
+
+        $out .= $meta->{data}->{name} ;
+        $out .= '&nbsp;</span>' if ($style) ;
+        $out .= " - *" . $meta->{data}->{'name-comment'} . "*"
+            if ( $meta->{data}->{'name-comment'} ) ;
+
+        if ($percent) {
+            $out .= "{{.percent value=$percent trigger=1 size=50% width=50px}} " ;
+        }
+
+        $out .= " " . join( " ", map { "@" . $_ } @{ $meta->{data}->{who} } )
+            if ( $meta->{data}->{who} ) ;
+        $out .= "\n" ;
+        if ( $meta->{data}->{redmine} ) {
+            $out
+                .= INDENT x ( $meta->{indent} + 1 ) . "* "
+                . _redmine_info( $meta->{data}->{redmine}, $meta->{data}->{redmine_ticket}, 1 )
+                . "\n" ;
+        }
+
+        $out .= "$meta->{data}->{content}" ;
+    }
+
+    return $out ;
+}
+
+# -----------------------------------------------------------------------------
+
+# convert the tree to a mind map, picks the most useful fields
+sub _tree_to_map
+{
+    my ( $tree, $width ) = @_ ;
+    $width ||= "100%" ;
+    my $out = "~~~~{.mindmap width='$width' shapes='box' scheme='grey'}\n" ;
+
+    my $root = $tree->meta('root') ;
+    $out .= "* $root->{data}->{name}\n" ;
+
+    foreach my $meta ( $tree->traverse() ) {
+        my $indent = $meta->{indent} ;
+
+        # there are no root nodes
+        $indent++ ;
+
+        my @colors = _pick_color($meta) ;
+        my $c      = "" ;
+
+        # mindmap has colors background/foreground rather
+        # than foreground.background also to match our backgrounds
+        # impose white
+        if (@colors) {
+            $c = "#" . ( $colors[1] ? _expand_hex_color( $colors[1] ) : "white" ) ;
+            $c .= ( $colors[0] ? "/" . _expand_hex_color( $colors[0] ) : "" ) ;
+        }
+
+        $out .= INDENT x $indent ;
+        $out .= "* $meta->{path} $meta->{data}->{name} $c\n" ;
+    }
+    $out .= "~~~~\n\n" ;
+
+    return $out ;
+}
+
+# -----------------------------------------------------------------------------
+# convert the tree to a project timeline
+sub _tree_to_project
+{
+    my ( $tree, $width ) = @_ ;
+    my $last = "" ;
+
+    if ($width) {
+        $width = "width='$width'" ;
+    } else {
+        $width = "" ;
+    }
+
+    # we do not allow weekend working
+    my $starts = "" ;
+    if ( $tree->{data}->{start_date} ) {
+        $starts = "project starts the " . $tree->{data}->{start_date}->printf("%Y-%m-%d") . "" ;
+
+    }
+    my $out = "~~~~{.project $width}\n$starts\nsaturday are closed\nsunday are closed\n" ;
+
+    foreach my $meta ( $tree->traverse() ) {
+        next
+            if ( $meta->{data}->{status} !~ /$VALID_STATUS/ ) ;
+
+        next if ( !$meta->{data}->{duration} ) ;
+
+        # next if ( $meta->{isparent} ) ;
+
+        my $days = ceil( $meta->{data}->{duration} ) ;
+
+        $out
+            .= "[$meta->{path} $meta->{data}->{name}] as [$meta->{data}->{id}] lasts "
+            . $days . " day"
+            . ( $meta->{data}->{duration} > 1 ? "s" : "" )
+            . "\n" ;
+
+        my @colors = _pick_color($meta) ;
+
+        # we just want the background color
+        my $bg = $colors[1] || _get_color('red300') ;    # ie notstarted
+        my $border = "" ;
+        if ( $meta->{data}->{critical} ) {
+            $border = color_style_from_bg('critical') ;
+
+        } elsif ( $meta->{data}->{milestone} ) {
+            $border = color_style_from_bg('milestone') ;
+        }
+        $border =~ s/color:\s?// ;
+        $border =~ s/;// ;
+
+        if ( $meta->{isparent} ) {
+            $bg     = 'white' ;
+            $border = 'black' ;
+        }
+
+        $out .= "[$meta->{data}->{id}] is colored in #$bg" . ( $border ? "/$border" : "" ) . "\n" ;
+
+        # now figure out how things chain together
+        if ($last) {
+            $out .= "[$meta->{data}->{id}] " ;
+            if ( $meta->{data}->{depends} ) {
+                my ( $depends, $id ) =
+                    ( $meta->{data}->{depends} =~ /(\w+) ([\w_-]+)/ ) ;
+
+                if ( $depends eq 'same' ) {
+                    $out .= "starts at [$id]'s start" ;
+                } elsif ( $depends eq 'before' ) {
+                    $out .= "ends at [$id]'s start" ;
+                } elsif ( $depends eq 'after' ) {
+                    $out .= "starts at [$id]'s end" ;
+                }
+            } else {
+                $out .= "starts at [$last]'s end" ;
+            }
+            $out .= "\n" ;
+        }
+
+        $last = $meta->{data}->{id} ;
+    }
+    $out .= "~~~~\n\n" ;
+
+    return $out ;
+}
+
+# -----------------------------------------------------------------------------
+# convert the tree to debug data, output to STDERR
+sub _tree_to_debug
+{
+    my ( $tree, $width ) = @_ ;
+    my @items = qw( path name status days) ;
+    my @table ;
+    my $out = "~~~~\n\n" ;
+    push @table, \@items ;
+
+    my %fix = (
+        days => 'duration',
+        dep  => 'depends'
+    ) ;
+
+    my $root = $tree->meta('root') ;
+
+    foreach my $meta ( $tree->traverse() ) {
+        my @row ;
+
+        foreach my $field (@items) {
+            my $item = "" ;
+            $field = $fix{$field} || $field ;
+
+            if ( $field eq 'path' ) {
+                $item = "$meta->{path} " ;
+            } elsif ( $field eq 'color' ) {
+                my @colors = _pick_color($meta) ;
+                if ( $colors[0] || $colors[1] ) {
+                    $item = " #"
+                        . ( $colors[0] ? "$colors[0]"  : "" )
+                        . ( $colors[1] ? ".$colors[1]" : "" ) ;
+                }
+            } elsif ( $field eq 'duration' ) {
+                $item = _nice_duration( $meta->{data}->{$field} ) ;
+            } elsif ( $meta->{data}->{$field} ) {
+                $item = "$meta->{data}->{$field} " ;
+            }
+            push @row, $item ;
+        }
+        push @table, \@row ;
+    }
+
+    $out .= Text::Table::Tiny::table(
+        rows => \@table,
+
+        # separate_rows => 1,
+        header_row => 1
+    ) ;
+    $out .= "\n~~~~\n\n" ;
+
+    return $out ;
+}
+
+# -----------------------------------------------------------------------------
+
+sub parse_wbs
+{
+    my ($data)   = @_ ;
+    my $layout   = $LAYOUT ;
+    my $duration = DURATION ;
+    my $start    = START ;
+    my %layouts_wanted ;
+    my $output = "" ;
+    my ( $expd_start, $expd_duration, $first, $version ) ;
+    my $orientation = "portrait" ;
+
+    # replace special dates with a colored span
+    $data =~ s/([\+\-\~])(\d{4}-\d{2}-\d{2})(.*$)/_highlite_change( $1,$2,$3)/egm ;
+    my @lines = split( /\n/, $data ) ;
+
+    for ( my $i = 0; $i < @lines; $i++ ) {
+
+        # these will set document layout, can be override by task layout
+        # check to see if there is a layout keyword
+        if ( $lines[$i] =~ /^layout:\s?(.*)/ ) {
+            $layout = $1 ;
+            next ;    # don't include in output
+        }
+        if ( $lines[$i] =~ /^orientation:\s?(.*)/ ) {
+            $orientation = $1 ;
+            next ;    # don't include in output
+        }
+        if ( $lines[$i] =~ /^duration:\s?(\d+[dw]?)/ ) {
+            $duration = $1 ;
+            next ;    # don't include in output
+        }
+        if ( $lines[$i] =~ /^start:\s?($DATE_FORMAT)/ ) {
+            $start = $1 ;
+            next ;    # don't include in output
+        }
+        if ( $lines[$i] =~ /^version:\s?(.*)/ ) {
+            $version = $1 ;
+        }
+
+        if ( $lines[$i] =~ /^(.*?):\s?$/ ) {
+            my $task_layout   = $layout ;
+            my $task_duration = $duration ;
+            my $task_start    = $start ;
+            my @task          = () ;
+            my $name          = $1 ;
+            my $header        = "" ;
+            my $intask ;
+
+            $i++ ;
+            while ( $i < @lines && $lines[$i] !~ /^(.*?):\s?$/ ) {
+                if ( $lines[$i] =~ /^layout:\s?(.*)/ ) {
+                    $task_layout = $1 ;
+                } elsif ( $lines[$i] =~ /^duration:\s?(.*)/ ) {
+                    $task_duration = $1 ;
+                } elsif ( $lines[$i] =~ /^start:\s?(.*)/ ) {
+                    $task_start = $1 ;
+                } else {
+                    if ( !$intask && $lines[$i] =~ /^\s?\[/ ) {
+                        $intask = 1 ;
+                    }
+
+                    my @fence = () ;
+
+                    # fenced code blocks need slurping
+                    if ( $lines[$i] =~ /^~~~~\{/ ) {
+                        push @fence, $lines[$i] ;
+                        $i++ ;
+                        while ( $i < @lines && $lines[$i] !~ /^~~~~/ ) {
+                            push @fence, $lines[$i] ;
+                            $i++ ;
+                        }
+
+                        # get end fence and extra whitespace
+                        push @fence, "$lines[$i]\n" ;
+                        $i++ ;
+
+                        if ($intask) {
+                            push @task, @fence ;
+                        } else {
+                            $header .= join( "\n", @fence ) ;
+                        }
+                    } else {
+
+                        if ($intask) {
+                            push @task, $lines[$i] ;
+                        } else {
+                            $header .= "$lines[$i]\n" ;
+                        }
+                    }
+                }
+                $i++ ;
+            }
+
+            # make sure we do not go too far, we need to wind back before the
+            # outermost forloop increments
+            $i-- ;
+
+            $expd_duration = $task_duration if ( !$expd_duration ) ;
+            $expd_start    = $task_start    if ( !$expd_start ) ;
+
+            my $tree = _build_task_tree(
+                name       => $name,
+                data       => \@task,
+                duration   => $task_duration,
+                start_date => $task_start,
+                block_line => $i
+            ) ;
+
+            my $root = $tree->meta('root') ;
+            $root->{data}->{orientation} = $orientation ;
+
+            # only output the info if we have some data
+            my $m = $tree->meta('1.0') ;
+            if ( $m && $m->{data} ) {
+
+                if ( !$first ) {
+                    $output .= "%WBS_HEADER%\n" ;
+                    $first++ ;
+                }
+
+                $output .= "## $name\n\n$header\n\n" ;
+
+                $task_layout = lc($task_layout) ;
+
+                # decide what needs to be added to this section
+                # cannot have both accurate and list sections, drop the list
+                $task_layout =~ s/list//
+                    if ( $task_layout =~ /accurate/
+                    && $task_layout =~ /list/ ) ;
+                foreach my $l ( split( /\s|,/, $task_layout ) ) {
+                    my $width = "100%" ;
+
+                    # lets grab a size for this section, just in case
+                    if ( $l =~ s/(\d{2,3})$// ) {
+                        $width = "$1%" ;
+                    }
+                    $layouts_wanted{$l}++ ;
+                    if ( $l && $layouts{$l} ) {
+                        $output .= "### $layouts{$l}\n\n" ;
+                        my $func = $reports{$l} ;
+                        $output .= $func->( $tree, $width ) ;
+                    }
+                }
+            }
+        } else {
+
+            # fenced code blocks need slurping
+            if ( $lines[$i] =~ /^~~~~\{/ ) {
+                $output .= $lines[$i] . "\n" ;
+                $i++ ;
+                while ( $i < @lines && $lines[$i] !~ /^~~~~/ ) {
+                    $output .= "$lines[$i]\n" ;
+                    $i++ ;
+                }
+            }
+
+            # any header sections need to be set one level deeper
+            $lines[$i] =~ s/^#/##/ ;
+            $output .= "$lines[$i]\n" ;
+        }
+    }
+
+    my $pre = "### " ;
+    $pre = "## " if ( $output !~ /^## .*%WBS_HEADER%/gsm ) ;
+
+    $output =~ s/%WBS_HEADER%//sm ;
+
+    $output .= "\n## {{.appendix}} - Color Key\n\n" . _key_table() . "\n" ;
+
+    # replaces all @name with a colored span
+    $output =~ s/(\@\w+)/_tag_who( $1)/egsm ;
+
+    return $output, $version ;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+    help_text    => "convert a wbs file into markdown",
+    help_cmdline => "wbs_file",
+    options      => {
+        'debug|d'   => 'debug only do not convert',
+        "verbose|v" => 'Be more verbose about things',
+        "clean|c"   => "generate clean with a cache dir",
+    },
+) ;
+
+my $cfg = App::Basis::Config->new( filename => "~/.inview" ) ;
+my $api = $cfg->get("/redmine-api-key") ;
+$redmine_server = $cfg->get("/redmine-url") ;
+
+if ( !$api || !$redmine_server ) {
+    msg_exit( "You need to define api-key and url fields in the YAML file ~/.redmine ", 2 ) ;
+}
+
+$redmine_api = Redmine::API->new(
+    'auth_key' => $api,
+    base_url   => $redmine_server,
+    trace      => 1
+) ;
+
+my $td = $ARGV[0] ;
+show_usage("You need to pass a filename") if ( !$td ) ;
+$td = fix_filename($td) ;
+show_usage("You need to pass a valid filename") if ( !-f $td ) ;
+
+my $outfile = $td ;
+$outfile =~ s/\.wbs$/.mdown/i ;
+
+# don't call them .md as my auto processor will process it
+$outfile =~ s/\.md$/-wbs.mdown/ if ( $outfile !~ /-wbs/ ) ;
+my $filedata = path($td)->slurp_utf8() ;
+
+# will not over-ride layout in the document
+$LAYOUT = "debug" if ( $opt{debug} ) ;
+
+my ( $out, $version ) = parse_wbs($filedata) ;
+
+if ( !$opt{debug} ) {
+    my $f = $outfile ;
+    $f =~ s/\.\w+$/.mdown/ ;
+    path($f)->spew_utf8($out) ;
+    my $regen = "regen " . ( $opt{clean} ? "-c" : "" ) . " '$f'" ;
+    system($regen) ;
+
+    # remove the markdown
+    unlink($f) ;
+
+    # create a backup of the file we used
+    my $backup = $td ;
+    $version ||= START ;
+    $backup =~ s/(\.\w+$)/-$version$1/ ;
+    my $bdir  = path($backup)->parent->stringify ;
+    my $bname = path($backup)->basename ;
+    $bdir .= "/backups" ;
+    if ( !-d $bdir ) {
+        path($bdir)->mkpath ;
+    }
+
+    # we append .bak to ensure that any watcher on .wbs does not reprocess this file
+    my $out = "$bdir/$bname.bak" ;
+    path($out)->spew_utf8($filedata) ;
+} else {
+    say $out ;
+}

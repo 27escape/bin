@@ -1,0 +1,113 @@
+#!/bin/bash
+# note
+
+# include the standard library functions
+. "$HOME/bin/include/script_base"
+when=$(date "+%F %T %:z")
+when=$(date "+%F %T")
+NOTEFILE="$HOME/Dropbox/Markdown/notefile.todo"
+HOST=$(hostname)
+# ---------------------------------------------------------------------------
+# setup HELP for show_usage
+
+export HELP="Add a timestamped note to my global notepad
+
+    usage: $PROGRAM [-h] 'the note'
+
+    -h | --help      This help
+    -v | --verbose   verbose output
+    -e | --edit      Edit the note file
+    -c | --cat       'cat' the notefile
+    -t | --todo      just show the items waiting to be done
+    -g | --grep      grep file for something specific
+    --tag            tag to add to the item
+
+"
+
+# ---------------------------------------------------------------------------
+# clean up things whenever the script completes
+cleanup() {
+    echo ""
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+# debug off
+export LOG_LEVEL=0
+
+# http://stackoverflow.com/questions/402377/using-getopts-in-bash-shell-script-to-get-long-and-short-command-line-options#402410
+# NOTE: This requires GNU getopt.
+# need to mention both short (-o) and long (--options) here
+# trailing : shows a parameter is required
+# TEMP=$(getopt -o vh --long verbose,help,cachedir: -n "$PROGRAM" -- "$@" 2>/dev/null)
+TEMP=$(getopt -o vhectg --long verbose,help,edit,cat,todo,grep,tag -n "$PROGRAM" -- "$@" 2>/dev/null)
+
+# if any parameters were bad
+if [ $? != 0 ] ; then show_usage 'Bad Parameters' ; fi
+
+# Note the quotes around `$TEMP': they are essential!
+eval set -- "$TEMP"
+
+tag=""
+while true; do
+    case "$1" in
+    -v | --verbose )  LOG_LEVEL=7
+    shift
+    ;;
+    -h | --help ) show_usage ''
+    ;;
+    # --cachedir) CACHE_DIR="$2"
+    #     shift 2 # remove param and data
+    -e | --edit)
+        subl "$NOTEFILE"
+        exit
+    ;;
+    -c | --cat)
+        cat "$NOTEFILE"
+        exit
+    ;;
+    -t | --todo)
+        grep '^\[ \]' "$NOTEFILE"
+        exit
+    ;;
+    -g | --grep)
+        shift
+        pattern=$2
+        grep "$pattern" "$NOTEFILE"
+        exit
+    ;;
+    --tag)
+        shift
+        tag=$2
+        ;;
+
+    * ) break ;;
+    esac
+done
+# tidy up command line
+shift
+
+# ---------------------------------------------------------------------------
+#  now start the main program
+msg=$*
+
+if [ "$msg" == "" ] ; then
+    show_usage "You need to provide a note" 1
+fi
+msg=$(echo "$msg" | tr '\n' ' ')
+
+# check if dropbox is running or not, note to the user
+pid=$(pgrep dropbox)
+if [ "$pid" == "" ] ; then
+    echo "Dropbox is not running, changes may not be syncronised"
+fi
+
+# append the tag to the message
+if [ "$tag" != "" ] ; then
+    msg="$msg @$tag"
+fi
+# add note to the 3rd line of the file - first first two are the section header
+sed -i "3s/^/[ ] $when $msg\n/" "$NOTEFILE"
+

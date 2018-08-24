@@ -2,49 +2,72 @@
 # quick script to do a screen lock or unlock
 # also changes color of my hypnocube
 
-export PATH=/home/kmulholland/bin:/home/kmulholland/perl5/perlbrew/bin:/home/kmulholland/perl5/perlbrew/perls/perl-5.18.1/bin:/home/kmulholland/src:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin
-export PERL5LIB=/home/kmulholland/src/lib
+# get the standard functions
+. $HOME/bin/include/script_base
 
-CUBE=/tmp/hypnocube
+export PATH=/home/kmulholland/bin:/home/kmulholland/src:/home/kmulholland/perl5/perlbrew/bin:/home/kmulholland/perl5/perlbrew/perls/perl-5.18.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:
+export PERL5LIB=/home/kmulholland/src/lib
 
 SPOTISTATUS='/tmp/spotifystatus'
 
-cmd=$1
+cmd=${1:-}
 
-function cube() {
-  color=$1
-  if [ -p $CUBE ] ; then
-    echo "clear $color : update" >> $CUBE
-  fi
-}
-
-
-echo "SCREENLOCK $cmd" >> ~/blueproximity.log
-
-if [ "$cmd" == "" -o "$cmd" == 'lock' ] ; then
-
-  # cube matrix darkred
-  cube "darkred"
-
-  spoti=`spotify_cmd playstatus`
-  echo $spoti > $SPOTISTATUS
-
-  if [ "$spoti" == "Playing" ] ; then
-    spotify_cmd stop
-  fi
-  cinnamon-screensaver-command -l
+if [ "$cmd" == "" ] ; then
+    cmd="lock"
 fi
 
-if [ "$cmd" == 'unlock' ] ; then
-  cube "darkgreen"
+LOCK_FLAG="-l"
+UNLOCK_FLAG="-d"
 
-  cinnamon-screensaver-command -d
-  spoti=`cat $SPOTISTATUS 2>/dev/null`
-  # restart the music if we had it stopped on lock
-  if [ "$spoti" == "Playing" ] ; then
-    spotify_cmd playpause
-    rm $SPOTISTATUS
-  fi
+# find the screensaver
+saver=$(ps ax|grep screensaver|grep -v grep)
+if [[ $saver =~ 'gnome-screensaver' ]] ; then
+    LOCK=gnome-screensaver-command
+elif [[ "$saver" =~ /cinnamon-screensaver/ ]] ; then
+    LOCK=cinnamon-screensaver-command
+elif [[ "$saver" =~ /xscreensaver/ ]] ; then
+    LOCK=xscreensaver-command
+    LOCK_FLAG="--lock"
+    UNLOCK_FLAG="--deactivate"
+else
+    warn "Unknown screensaver in use"
+    exit 1
+fi
+
+now=$(date)
+echo "$now SCREENLOCK $cmd" >> ~/blueproximity.log
+
+if [ "$cmd" == 'check' ] ; then
+    # proximity check
+    $LOCK -p
+elif [ "$cmd" == 'lock' ] ; then
+    echo LOCKING
+    # cube -u clear darkred
+    # photon "locked" &
+
+    # spotmop status > $SPOTISTATUS
+
+    # if [ "$spoti" = "Playing" ] ; then
+    #   # spotify_cmd stop
+    # fi
+    # spotmop pause
+    # # pause the pi zero spotify player
+    $LOCK $LOCK_FLAG
+elif [ "$cmd" == 'unlock' ] ; then
+    # cube -u clear darkgreen
+    # photon "unlocked" &
+
+    $LOCK $UNLOCK_FLAG
+    # count the playing items
+    spoti=$(grep -c -i playing $SPOTISTATUS 2>/dev/null)
+    # restart the music if we had it stopped on lock
+    if [ "$spoti" == "1" ] ; then
+    #     # spotify_cmd playpause
+        # spotmop play
+        rm $SPOTISTATUS
+    fi
+else
+    echo "Unknown command"
 fi
 
 

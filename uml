@@ -34,12 +34,12 @@ function show_usage  {
 while getopts “hs” OPTION
 do
   case $OPTION in
-    h) usage
+    h) show_usage
       exit 1
       ;;
     s) SVG="-tsvg"
       ;;
-    *) usage
+    *) show_usage
       exit 1
       ;;
   esac
@@ -51,7 +51,7 @@ shift $(($OPTIND -1))
 INPUT=$1
 OUTPUT=$2
 
-if [ ! -f $PLANTUML ] ; then 
+if [ ! -f $PLANTUML ] ; then
     show_usage "Could not find plantuml.jar, expecting it to be $PLANTUML" 2
 fi
 
@@ -70,5 +70,5 @@ fi
 
 # we use the pipe option to control output into the file we want
 
-cat "$INPUT" | java -jar $PLANTUML $SVG -nbthread auto -pipe >$OUTPUT
-# exit 0 
+cat "$INPUT" | java -Djava.awt.headless=true -jar $PLANTUML -charset UTF-8 $SVG -nbthread auto -pipe >$OUTPUT
+# exit 0

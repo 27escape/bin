@@ -1,4 +1,4 @@
-#!/bin/env perl
+#!/usr/bin/env perl
 # started out to test the ping_subnet function, now spun out as its own script
 # (c) kevin Mulholland 2012, moodfarm@cpan.org
 # this code is released under the Perl Artistic License

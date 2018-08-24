@@ -1,0 +1,304 @@
+#!/usr/bin/env perl
+# taken from https://github.com/sbutler/log2json
+
+use warnings;
+use strict;
+
+use DateTime;
+use DateTime::Format::Strptime;
+use DateTime::TimeZone;
+use Getopt::Long;
+use JSON;
+use Pod::Usage;
+use URI;
+use URI::QueryParam;
+
+my %log_formats = (
+    common          => qr{
+                        ^
+                        (?<host>\S+)            \s
+                        (?<rfc>\S+)             \s
+                        (?<authuser>\S+)        \s
+                        \[(?<date>[^\]]+)\]     \s
+                        \"(?<request>.*?)\"     \s
+                        (?<status>\d+)          \s
+                        (?<bytes>-|\d+)
+                    }ox,
+
+    vhost_common    => qr{
+                        ^
+                        (?<vhost>\S+)           \s
+                        (?<host>\S+)            \s
+                        (?<rfc>\S+)             \s
+                        (?<authuser>\S+)        \s
+                        \[(?<date>[^\]]+)\]     \s
+                        \"(?<request>.*?)\"     \s
+                        (?<status>\d+)          \s
+                        (?<bytes>-|\d+)
+                    }ox,
+
+
+    combined        => qr{
+                        ^
+                        (?<host>\S+)            \s
+                        (?<rfc>\S+)             \s
+                        (?<authuser>\S+)        \s
+                        \[(?<date>[^\]]+)\]     \s
+                        \"(?<request>.*?)\"     \s
+                        (?<status>\d+)          \s
+                        (?<bytes>-|\d+)         \s
+                        \"(?<referer>.*?)\"     \s
+                        \"(?<useragent>.*?)\"
+                    }ox,
+
+    vhost_combined  => qr{
+                        ^
+                        (?<vhost>\S+)           \s
+                        (?<host>\S+)            \s
+                        (?<rfc>\S+)             \s
+                        (?<authuser>\S+)        \s
+                        \[(?<date>[^\]]+)\]     \s
+                        \"(?<request>.*?)\"     \s
+                        (?<status>\d+)          \s
+                        (?<bytes>-|\d+)         \s
+                        \"(?<referer>.*?)\"     \s
+                        \"(?<useragent>.*?)\"
+                    }ox,
+);
+
+my $opt_pretty = $ENV{ 'LOG2JSON_PRETTY' } || 0;
+my $opt_help = 0;
+my $opt_odate_format = $ENV{ 'LOG2JSON_OUTPUT_DATE_FORMAT' } || '%FT%TZ';
+my $opt_odate_timezone = $ENV{ 'LOG2JSON_OUTPUT_DATE_TIMEZONE' } || 'UTC';
+my $opt_log_format = $ENV{ 'LOG2JSON_LOG_FORMAT' } || 'combined';
+my $opt_idate_format = $ENV{ 'LOG2JSON_INPUT_DATE_FORMAT' } || '%d/%b/%Y:%H:%M:%S %z';
+my $opt_idate_timezone = $ENV{ 'LOG2JSON_INPUT_DATE_TIMEZONE' } || 'local';
+
+GetOptions(
+    'pretty|p'                              => \$opt_pretty,
+    'output-date-format|odate-format|odf=s' => \$opt_odate_format,
+    'output-date-timezone|odate-tz|odz=s'   => \$opt_odate_timezone,
+    'log-format|format|fmt=s'               => \$opt_log_format,
+    'input-date-format|idate-format|idf=s'  => \$opt_idate_format,
+    'input-date-timezone|idate-tz|idz=s'    => \$opt_idate_timezone,
+
+    'help|h'        => \$opt_help,
+) or pod2usage( 2 );
+pod2usage( 1 ) if $opt_help;
+
+my $dtf_output = DateTime::Format::Strptime->new( pattern => $opt_odate_format );
+my $dtz_output = DateTime::TimeZone->new( name => $opt_odate_timezone );
+my $dtf_input = DateTime::Format::Strptime->new( pattern => $opt_idate_format, time_zone => $opt_idate_timezone );
+my $json = JSON->new()->utf8( 1 );
+
+if ($opt_pretty) {
+    $json->indent( 1 );
+    $json->space_before( 0 );
+    $json->space_after( 1 );
+}
+
+my $log_format;
+if (exists $log_formats{ $opt_log_format }) {
+    $log_format = $log_formats{ $opt_log_format };
+} else {
+    $log_format = qr/$opt_log_format/o;
+}
+
+printf "[%s", ($opt_pretty ? "\n" : '');
+my $first_obj = 1;
+FILE: foreach my $file (@ARGV ? @ARGV : ('-')) {
+    my $fileh;
+    unless (open $fileh, "<$file") {
+        printf STDERR "[%s] unable to open: %s\n", $file, $!;
+        next FILE;
+    }
+
+    my $lineno = 0;
+    LINE: while (my $line = <$fileh>) {
+        chomp $line;
+        ++$lineno;
+
+        unless ($line =~ $log_format) {
+            printf STDERR "[%s #%d] unable to parse line\n", $file, $lineno;
+            next LINE;
+        }
+
+        my %parts = %+;
+
+        foreach my $field (qw/status bytes time keepalive port pid I O S/) {
+            my $value = $parts{ $field };
+            if (defined $value) {
+                if ($value ne '-') {
+                    $parts{ $field } = int( $value );
+                } else {
+                    $parts{ $field } = undef;
+                }
+            }
+        }
+
+        if (defined $parts{ 'date' }) {
+            my $date = $dtf_input->parse_datetime( $parts{ 'date' } );
+            $date->set_time_zone( $dtz_output );
+            $parts{ 'date' } = $dtf_output->format_datetime( $date );
+        }
+
+        if (defined $parts{ 'request' } && $parts{ 'request' } =~ m{
+            ^
+            (?<method>\S+)      \s
+            (?<uri>\S+)         \s
+            (?<protocol>\S+)
+            $
+        }ox) {
+            $parts{ 'oRequest' } = {
+                method      => uc $+{ 'method' },
+                uri         => $+{ 'uri' },
+                protocol    => $+{ 'protocol' },
+            };
+
+            if (defined $parts{ 'oRequest' }{ 'uri' }) {
+                eval {
+                    my $uri = URI->new( $parts{ 'oRequest' }{ 'uri' } );
+
+                    $parts{ 'oRequest' }{ 'oURI' } = { 'path' => $uri->path };
+                    if (defined $uri->query) {
+                        $parts{ 'oRequest' }{ 'oURI' }{ 'query' } = $uri->query;
+                        $parts{ 'oRequest' }{ 'oURI' }{ 'oQuery' } = $uri->query_form_hash;
+                    }
+                };
+                if ($@) {
+                    printf STDERR "[%s #%d] unable to parse request URI: %s\n", $file, $lineno, $@;
+                }
+            }
+        }
+
+        if (defined $parts{ 'referer' } && $parts{ 'referer' } ne '-' && $parts{ 'referer' }) {
+            eval {
+                my $uri = URI->new( $parts{ 'referer' } );
+
+                my %oReferer;
+
+                $oReferer{ 'scheme' } = $uri->scheme if defined $uri->scheme;
+                $oReferer{ 'host' } = $uri->host if defined $uri->host;
+                $oReferer{ 'port' } = $uri->port if defined $uri->port;
+                $oReferer{ 'path' } = $uri->path if defined $uri->path;
+                if (defined $uri->query) {
+                    $oReferer{ 'query' } = $uri->query;
+                    $oReferer{ 'oQuery' } = $uri->query_form_hash;
+                }
+
+                $parts{ 'oReferer' } = \%oReferer;
+            };
+        }
+
+        my $str = $json->encode( \%parts );
+        if ($opt_pretty) {
+            chomp $str;
+            $str = join "\n   ", split /\n/, $str;
+        }
+
+        if ($first_obj) {
+            $first_obj = 0;
+        } else {
+            print ",", ($opt_pretty ? "\n" : "");
+        }
+        print( ($opt_pretty ? "   " : ""), $str );
+    }
+}
+printf "%s]\n", ($opt_pretty && !$first_obj ? "\n" : "");
+
+__END__
+
+=head1 NAME
+
+log2json.pl - Converts Apache style logs to JSON documents.
+
+=head1 SYNOPSIS
+
+log2json.pl [options] [file ...]
+
+ Options:
+   --pretty, -p                 Pretty print output
+
+   --input-date-format=STRPTIME
+   --idate-format=STRPTIME
+   --idf=STRPTIME               Input date format
+
+   --input-date-timezone=TZNAME
+   --idate-tz=TZNAME
+   --idz=TZNAME                 Input date timezone
+
+   --output-date-format=STRFTIME
+   --odate-format=STRFTIME
+   --odf=STRFTIME               Output date format
+
+   --output-date-timezone=TZNAME
+   --odate-tz=TZNAME
+   --odz=TZNAME                 Output date timezone
+
+   --log-format=REGEXP
+   --format=REGEXP
+   --fmt=REGEXP                 Input log format
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--pretty, -p>
+
+Pretty print the output.
+
+=item B<--input-date-format, --idate-format, --idf>
+
+Input date format string, using the specifiers of C<strptime>. The default
+is to use C<%d/%b/%Y:%H:%M:%S %z>
+
+=item B<--input-date-timezone, --idate-tz, --idz>
+
+Input date timezone name, using the database from C<DateTime::TimeZone>.
+Date fields will use this as the default timezone, unless one is specified
+in the C<input-date-format>. The default is to use C<local>.
+
+=item B<--output-date-format, --odate-format, --odf>
+
+Output date format string, using the specifiers of C<strftime>. The default
+is to use C<%FT%TZ>.
+
+=item B<--output-date-timezone, --odate-tz, --odz>
+
+Output date timezone name, using the database from C<DateTime::TimeZone>.
+Date fields will be converted to this timezone before formatting. The
+default is to use C<UTC>.
+
+=item B<--log-format, --format, --fmt>
+
+Input log format. This understands the common choices of C<common>,
+C<vhost_common>, C<combined>, and C<vhost_combined>. You can also specify
+your own regular expression here, which will provide all the named capture
+groups in the JSON object. These named groups are treated specially:
+
+=over 4
+
+=item B<status, bytes, time, keepalive, port, pid, I, O, S>
+
+Will be converted to an integer, unless it is '-' in which case it will be C<null>.
+
+=item B<request>
+
+Will be provided as C<request>, but an attempt will be made to parse it as the
+Apache format "%m %U%q %H". These fields will be provided in C<oRequest> as
+C<method>, C<uri>, and C<protocol>.
+
+=item B<oRequest.uri, referer>
+
+These fields will be attempted to parse and its result provided as
+C<oRequest.oURI|oReferer> with the various parts of the URI provided as
+properties. If there is a query string, then it will also be parsed and
+provided as C<oQuery>.
+
+=back
+
+The default is C<combined>.
+
+=back
+
+=cut

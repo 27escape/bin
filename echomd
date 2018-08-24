@@ -1,0 +1,69 @@
+#!/usr/bin/env perl
+# PODNAME: echomd
+# ABSTRACT: write markdown to the console
+
+=head1 NAME
+
+echomd
+
+=head1 SYNOPSIS
+
+    >  echomd ..options..
+
+    to get full help use
+    > echomd --help
+
+=head1 DESCRIPTION
+
+Interpret markdown and write to console
+
+=cut
+
+#
+# (c) yourname, your@email.address.com
+# this code is released under the Perl Artistic License
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+
+my $help_extra = "# # Bringing MD Like Syntax To Bash Shell
+It should be something as ***easy***
+and as ___natural___ as writing text.
+
+> Keep It Simple
+> With quoted sections
+
+Is the idea
+
+  * behind
+  * all this
+
+~~~striking~~~ UX for `shell` users too.
+- - -
+#green(green text) bg#red(text with red background)
+" ;
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+    help_text    => "Interpret markdown and write to console\n$help_extra",
+    help_cmdline => "text to interpret. '-' will read from STDIN",
+    options      => {
+        # 'verbose|v' => 'Dump extra useful information',
+    },
+) ;
+
+my $msg = join( " ", @ARGV ) ;
+if ( $msg eq '-' ) {
+    $msg = "" ;
+    while (<STDIN>) {
+        $msg .= "$_" ;
+    }
+
+}
+saymd($msg) ;

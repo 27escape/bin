@@ -230,7 +230,7 @@ my %opt = init_app(
   ,
   help_cmdline => 'filename sheet-colrow:colrow',
   options      => {
-    'delimitor=s' => "output delimitor [default: '$default_delimitor']",
+    'delimitor|separator|d=s' => "output delimitor [default: '$default_delimitor']",
     'rotate|r'    => 'rotate input data, columns become rows'
   }
 ) ;

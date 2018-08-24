@@ -1,6 +1,7 @@
-#!/usr/bin/env perl 
+#!/usr/bin/env perl
 # convert mindmap files into markdown and then
 # convert markdown or plaintasks files into PDF
+# handle raid.log files, force ct2 to regen related md/wbs files
 # (c) author moodfarm@cpan.org
 # license: same as perl
 # date 2015-03-03
@@ -11,6 +12,7 @@ use warnings ;
 
 use When::Happens ;
 use When::Happens::FileNotify ;
+use Path::Tiny ;
 
 my $verbose = 0 ;
 
@@ -54,6 +56,24 @@ sub convert_plaintasks
 }
 
 # -----------------------------------------------------------------------------
+# convert work breakdown (.wbs) files using my td2pdf script
+
+sub convert_wbs
+{
+    my ( $params, $changed ) = @_ ;
+
+    foreach my $o (@$changed) {
+        # we can only process files
+        next if ( !-f $o->path() ) ;
+        next if ( $o->type() !~ /modify|create/ ) ;
+        # we don't want to process deletes etc
+        my $filename = $o->path() ;
+        run "wbs2md '$filename'" ;
+        say "converted '$filename' to PDF" if ($verbose) ;
+    }
+}
+
+# -----------------------------------------------------------------------------
 # convert mindmap (freemind/freeplain) files using my mm2md script, this
 # creates a markdown file, which will then trigger convert_markdown
 
@@ -78,6 +98,41 @@ sub convert_mindmap
 }
 
 # -----------------------------------------------------------------------------
+# xx-raid.log files may be included in markdown and wbs files, if they have been changed
+# find the files that include/import them and update
+# cheat as much as possible by shelling out to grep/awk etc
+
+sub include_updates
+{
+    my ( $params, $changed ) = @_ ;
+
+    foreach my $o (@$changed) {
+        # we can only process files
+        next if ( !-f $o->path() ) ;
+        # we don't want to process deletes etc
+        next if ( $o->type() !~ /modify|create/ ) ;
+
+        my $filename = path( $o->path() )->basename ;
+
+        my ( $err, $stdout ) = run "ack -l '$filename' '$params->{dir}'" ;
+        if ( !$err && $stdout ) {
+            foreach my $f ( split( /\n/, $stdout ) ) {
+                if ( $f =~ /\.wbs$/ ) {
+                    # say "wbs2md '$f'" ;
+                    run "wbs2md '$f'" ;
+                } elsif ( $f =~ /\.md$/ ) {
+                    # say "regen '$f'" ;
+                    run "regen '$f'" ;
+                }
+            }
+        }
+
+        say "touching files that import '$filename'" if ($verbose) ;
+    }
+}
+
+
+# -----------------------------------------------------------------------------
 
 my %opt = init_happens(
     help_text =>
@@ -87,8 +142,9 @@ my %opt = init_happens(
             desc     => 'directory to monitor for file changes',
             required => 1
         },
-        "daemon"    => 'Run in the background as a daemon',
-        "verbose|v" => 'Be verbose',
+        "daemon"     => 'Run in the background as a daemon',
+        "verbose|v"  => 'Be verbose',
+        "ignore|i=s" => "Colon separated path of directories to ignore",
     },
 ) ;
 
@@ -96,20 +152,52 @@ my %opt = init_happens(
 init_happens(%opt) ;
 
 $opt{dir} =~ s/^~/$ENV{HOME}/ ;
+$opt{dir} =~ s|//|/|g ;
+
 # setup our global verbose
 $verbose = $opt{verbose} ;
 
-# setup our dir watcher for markdownfiles
-filenotify { id => 'markdown', dir => $opt{dir}, filter => qr/.md$/i } =>
-    \&convert_markdown ;
+# setup our dir watcher for markdown files
+filenotify {
+    id     => 'markdown',
+    dir    => $opt{dir},
+    ignore => $opt{ignore},
+    filter => qr/.md$/i
+} => \&convert_markdown ;
 
 # setup our dir watcher for mindmaps
-filenotify { id => 'mindmap', dir => $opt{dir}, filter => qr/.mm$/i } =>
-    \&convert_mindmap ;
+# filenotify {
+#     id     => 'mindmap',
+#     dir    => $opt{dir},
+#     ignore => $opt{ignore},
+#     filter => qr/.mm$/i
+# } => \&convert_mindmap ;
 
 # setup our dir watcher for project PlainTasks
-filenotify { id => 'plaintasks', dir => $opt{dir}, filter => qr/.td$/i } =>
-    \&convert_plaintasks ;
+# filenotify {
+#     id     => 'plaintasks',
+#     dir    => $opt{dir},
+#     ignore => $opt{ignore},
+#     filter => qr/.td$/i
+# } => \&convert_plaintasks ;
+
+# setup our dir watcher for project WBS
+filenotify {
+    id     => 'wbs',
+    dir    => $opt{dir},
+    ignore => $opt{ignore},
+    filter => qr/.wbs$/i
+} => \&convert_wbs ;
+
+# setup our dir watcher for project raidlogs and mdown files
+# that may get included/imported
+filenotify {
+    id     => 'includes',
+    dir    => $opt{dir},
+    ignore => $opt{ignore},
+    filter => qr/(raid\.log$|\.mdown)/i
+} => \&include_updates ;
+
 
 # wait for stuff to happen
 happens ;

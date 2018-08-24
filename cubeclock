@@ -1,0 +1,54 @@
+#!/usr/bin/env perl
+# PODNAME: cubeclock - set color of the cube
+# ABSTRACT: Set the color of the cube based on the hour 0..23
+
+=head1 NAME
+
+cubeclock
+
+=head1 SYNOPSIS
+
+    > cubeclock 
+
+    to get full help use
+    > cubeclock --help   
+
+=head1 DESCRIPTION
+
+Sets the color of the hypnocube to a color
+
+=cut
+
+#
+# (c) yourname, your@email.address.com
+# this code is released under the Perl Artistic License
+
+use 5.10.0 ;
+use strict;
+use warnings;
+use App::Basis;
+
+# array of 24 colors for the hour
+my @hours => (
+    ) ;
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text    => "Set color of hypnocube base on the hour",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+    },
+    #log_file => "your-logfile",
+);
+
+
+if ( $opt{verbose} ) {
+    debug( "INFO", "Started");
+}
+
+my $now = time() ;
+

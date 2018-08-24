@@ -1,0 +1,59 @@
+#!/usr/bin/env perl
+# PODNAME: daemonic
+# ABSTRACT: Run a program like a daemon
+
+=head1 NAME
+
+daemonic
+
+=head1 SYNOPSIS
+
+    >  daemonic ..options..
+
+    to get full help use
+    > daemonic --help
+
+=head1 DESCRIPTION
+
+Run a program like a daemon, detach from controlling TTY etc
+There a is probably a better thing out there to do this, but as a quick fix, it works
+
+=cut
+
+#
+# (c) yourname, your@email.address.com
+# this code is released under some License
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+    help_text    => "Run a program like a daemon",
+    help_cmdline => "command and args to run in the background",
+    options      => { 'verbose|v' => 'Dump extra useful information', },
+) ;
+
+my $command = join( " ", @ARGV ) ;
+show_usage("Missing command") if ( !$command ) ;
+
+eval {
+    # parent should exit
+    exit(0) if ( !daemonise() ) ;
+} ;
+if ($@) {
+    msg_exit( 'Failed to become daemonic', 1 ) ;
+}
+
+verbose("Command to run is: $command") ;
+# now run whatever it is
+my ( $code, $out, $err ) = run_cmd($command) ;
+if ($code) {
+    msg_exit( "Could not run: $command", 2 ) ;
+}

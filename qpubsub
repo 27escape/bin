@@ -1,0 +1,145 @@
+#!/usr/bin/env perl
+# PODNAME: qpubsub
+# ABSTRACT: simple script add/listen to a pubsub queue
+
+=head1 NAME
+
+qpubsub
+
+=head1 SYNOPSIS
+
+    >  qpubsub ..options..
+
+    to get full help use
+    > qpubsub --help
+
+=head1 DESCRIPTION
+
+- simple script add things to a task queue
+
+=cut
+
+#
+# (c) kevin mulholland, moodfarm@cpan.com
+# this code is released under the Perl Artistic License
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use DBI ;
+use App::Basis ;
+use App::Basis::Config ;
+use App::Basis::Queue ;
+
+# -----------------------------------------------------------------------------
+
+use constant MAX_EXPIRY_DATETIME => "3000-01-01 12:00 UTC" ;
+
+# -----------------------------------------------------------------------------
+# connect to the queue DB
+
+sub connect_queue
+{
+    my ( $dsn, $user, $passwd, $qname ) = @_ ;
+    my $dbh
+        = DBI->connect( $dsn, $user, $passwd,
+        { RaiseError => 1, PrintError => 0, AutoCommit => 1 } )
+        or die "Could not connect to DB $dsn" ;
+
+    if ( $dsn =~ /SQLite/i ) {
+        $dbh->do("PRAGMA journal_mode = WAL") ;
+        $dbh->do("PRAGMA synchronous = NORMAL") ;
+    }
+
+    my $queue = App::Basis::Queue->new(
+        dbh           => $dbh,
+        default_queue => $qname,
+        debug         => 0,
+    ) ;
+    return $queue ;
+}
+
+# -----------------------------------------------------------------------------
+# write out the data
+sub print_data
+{
+    my $obj = shift ;
+    my ( $queue, $record ) = @_ ;
+
+    say "$record->{added}:$queue:$record->{data}->{msg}" ;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+    help_text    => "simple script interacte with a pubsub queue",
+    help_cmdline => "the message to add to the queue",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'queue|q=s' => {
+            desc     => 'name of the queue to add to',
+            required => 1,
+            # validate => sub { my $name = shift ; $name !~ /[\*%]/},
+        },
+        'expires|e=s'  => 'if publishing, date after which added message is no longer valid',
+        'persistent|p' => 'if publishing, mark this message as persistent',
+        'listen|l'     => 'Listen to the queue',
+        'delay|d=i'    => {
+            desc =>
+                'If listening, check the queue for new items every number of seconds',
+            default => 30,
+            # depends => 'listen',
+        },
+        'events=i' => {
+            desc => 'If listening, quit after this many events have occured',
+            # depends => 'listen',
+        },
+        'until|u=s' => {
+            desc => 'If listening, quit when this datetime elapses',
+            default => MAX_EXPIRY_DATETIME,
+            # depends => 'listen',
+        },
+    },
+) ;
+
+my $msg = join( " ", @ARGV ) ;
+
+my $cfg = App::Basis::Config->new( filename => "~/.queues" ) ;
+my $q = $cfg->get("/queue") ;
+
+my $theq
+    = connect_queue( $q->{dsn}, $q->{user}, $q->{password}, $opt{queue} ) ;
+
+if ( !$theq ) {
+    msg_exit( "Could not connect to queue $q->{dsn}", 2 ) ;
+}
+
+# if we have a message then this should be added to the queue asap
+if ( $opt{listen} ) {
+
+    $theq->subscribe(
+        callback     => \&print_data,
+        persist      => 1,
+    ) ;
+    $theq->listen(
+        events       => $opt{events},
+        datetime     => $opt{until},
+        listen_delay => $opt{delay},
+     ) ;
+} elsif ($msg) {
+
+    if( $opt{queue} =~ /[\*%]/) {
+        msg_exit( "publish queue cannot contain the '*' character") ;
+    }
+
+    my $resp = $theq->publish(
+        data    => { msg => $msg },
+        expires => $opt{expires},
+        persist => $opt{persistent}
+    ) ;
+} else {
+    msg_exit("If not listening, then a message is required") ;
+}

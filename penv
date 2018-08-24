@@ -1,8 +1,9 @@
 #!/bin/sh
-# run a script using the local lib
+# run a perl with the system perl
 # moodfarm@cpan.org
 
+PERL=/usr/bin/perl5.18.2
+PERL=perl
 PERL5LIB=$PERL5LIB:./lib
 
-# run anything that was passed
-$*
+$PERL  $*

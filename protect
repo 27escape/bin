@@ -1,0 +1,102 @@
+#!/bin/bash
+# protect or unprotect a file
+
+# include the standard library functions
+. "$HOME/bin/include/script_base"
+# whats the default user email to be used
+EMAIL=$(get_config "/gnupg/email")
+
+# ---------------------------------------------------------------------------
+# setup HELP for show_usage
+
+case "$PROGRAM" in
+    protect)
+        export HELP="protect a file, creates a .gpg file
+
+    usage:  [-h] filename
+
+    -h | --help      This help
+    -v | --verbose   verbose output
+
+"
+    ;;
+    unprotect)
+        export HELP="unprotect a file
+
+    usage:  [-h] filename.gpg
+
+    -h | --help      This help
+    -v | --verbose   verbose output
+
+"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
+# clean up things whenever the script completes
+cleanup() {
+    echo ""
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+# debug off
+export LOG_LEVEL=0
+
+# http://stackoverflow.com/questions/402377/using-getopts-in-bash-shell-script-to-get-long-and-short-command-line-options#402410
+# NOTE: This requires GNU getopt.
+# need to mention both short (-o) and long (--options) here
+# trailing : shows a parameter is required
+# TEMP=$(getopt -o vh --long verbose,help,cachedir: -n "$PROGRAM" -- "$@" 2>/dev/null)
+TEMP=$(getopt -o vh --long verbose,help -n "$PROGRAM" -- "$@" 2>/dev/null)
+
+# if any parameters were bad
+if [ $? != 0 ] ; then show_usage 'Bad Parameters' ; fi
+
+# Note the quotes around `$TEMP': they are essential!
+eval set -- "$TEMP"
+
+while true; do
+    case "$1" in
+    -v | --verbose )  LOG_LEVEL=7
+    shift
+    ;;
+    -h | --help ) show_usage ''
+    ;;
+    # --cachedir) CACHE_DIR="$2"
+    #     shift 2 # remove param and data
+    * ) break ;;
+    esac
+done
+# tidy up command line
+shift
+
+# ---------------------------------------------------------------------------
+#  now start the main program
+debug " started"
+
+FILENAME=$1
+
+if [ "$FILENAME" == "" ] || [ ! -f "$FILENAME" ] ; then
+    show_usage "Missing filename/file does not exist"  2
+fi
+
+case "$PROGRAM" in
+    protect)
+        gpg -q --output "$FILENAME.gpg" --encrypt --recipient "$EMAIL" "$FILENAME"
+        rm -f "$FILENAME"
+        ;;
+    unprotect)
+        {
+            # stop it complaining about $(echo)
+            # bash regexp serach and replace ${variable_name//item/replacement}
+            # shellcheck disable=SC2116
+            FILENAME_LESS=$(echo ${FILENAME//.gpg/})
+        }
+        gpg -q --output "$FILENAME_LESS" --decrypt --recipient "$EMAIL" "$FILENAME"
+        rm "$FILENAME"
+        ;;
+
+esac

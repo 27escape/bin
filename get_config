@@ -1,0 +1,135 @@
+#!/usr/bin/env perl
+# PODNAME: get_config / put_config
+# ABSTRACT: handle data from App::Basis::Config files
+
+=head1 NAME
+
+get_config / put_config
+
+=head1 SYNOPSIS
+
+    >  get_config filename path
+    >  put_config filename path value
+
+    to get full help use
+    > get_config --help
+
+=head1 DESCRIPTION
+
+Fetch or replace an item of data in an App::Basis::Config file
+
+=cut
+
+#
+# (c) yourname, your@email.address.com
+# this code is released under some License
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+use App::Basis::Config ;
+use lib "$ENV{HOME}/src/lib" ;
+use MyUtils ;
+
+my $general_config = inview_config_file() ;
+
+# -----------------------------------------------------------------------------
+
+sub flatten_hash
+{
+    my ( $path, $value, $ignore_key ) = @_ ;
+    my $out = "" ;
+
+    if ( ref($value) eq "HASH" ) {
+        # flatten the hash into a series of path like lines
+        foreach my $k ( keys %{$value} ) {
+            $out .= flatten_hash( "$path/$k", $value->{$k} ) ;
+        }
+    } elsif ( ref($value) eq "ARRAY" ) {
+        foreach my $v ( @{$value} ) {
+            $out .= flatten_hash( $path, $v ) ;
+        }
+    } else {
+        $out .= ( $ignore_key ? "" : "$path:" ) . "$value\n" if ($value) ;
+    }
+    return $out ;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+my %init_args ;
+
+if ( $program =~ /(pu|se)t_config/ ) {
+    %init_args = (
+        help_text    => "Add a value into a config file at a given path",
+        help_cmdline => "filename path value",
+        options      => {
+            'verbose|v' => 'Dump extra useful information',
+            'config|c=s' =>
+                { desc => "Config file to use", default => $general_config, required => 1 },
+        },
+    ) ;
+} else {
+    %init_args = (
+        help_text    => "Fetch a value from a config file at a given path",
+        help_cmdline => "filename path",
+        options      => {
+            'value|x'   => 'Just show the value, not any key information',
+            'exec|e'    => 'execute any value as a system command (eek - security issues)',
+            'verbose|v' => 'Dump extra useful information',
+            'config|c=s' =>
+                { desc => "Config file to use", default => $general_config, required => 1 },
+        },
+    ) ;
+}
+
+# do a single init thing
+my %opt = init_app(%init_args) ;
+
+# anything left if path and value related
+my $path = shift @ARGV ;
+my $value ;
+
+if ( !$path ) {
+    show_usage("a path is required") ;
+}
+if ( $path =~ /:/ ) {
+    show_usage("path cannot contain ':'") ;
+}
+
+# lets have the config named after this program
+my $cfg = App::Basis::Config->new( filename => $opt{config} ) ;
+
+if ( $program =~ /(se|pu)t_config/ ) {
+    if ( scalar @ARGV ) {
+        $value = $cfg->set( $path, \@ARGV ) ;
+    } else {
+        # $value = join( ' ', @ARGV ) ;
+        $value = $cfg->set( $path, $value ) ;
+    }
+    my $r = $cfg->store() ;
+} else {
+    # example of using an app specifc config
+    $value = $cfg->get($path) ;
+
+# verbose( "ref is " . ref($value)) ;
+    if ( !ref($value) ) {
+        if( $opt{exec}) {
+            my @resp = system( $value) ;
+            # verbose_data( @resp) ;
+            $value = "" ;
+        }
+    } else {
+        # arrays and hashs will be displayed in full
+        $value = flatten_hash( $path, $value, $opt{value} ) ;
+        $value = join( "\n", sort split( /\n/, $value ) ) ;
+        say STDERR "WARNING - keys must be displayed for multiple values" if ( $opt{value} ) ;
+        say STDERR "WARNING - Cannot perform exec on multiple values"     if ( $opt{exec} ) ;
+    }
+
+    say $value if ($value) ;
+}
+

@@ -2,6 +2,9 @@
 # PODNAME: rnd_copy - randomly copy files from one directory to another
 # ABSTRACT: Sync-like action to randomly copy one directory to another
 
+# TODO the indexing needs to be on the full filename and nut just the basename
+# - lots of files may have the same name
+
 =head1 NAME
 
 rnd_copy
@@ -12,11 +15,11 @@ rnd_copy
     > rnd_copy --src="~/Music" --dest="~/ipod" -n 10
 
     to get full help use
-    > rnd_copy --help   
+    > rnd_copy --help
 
 =head1 DESCRIPTION
 
-    Syntax: rnd_copy [options] 
+    Syntax: rnd_copy [options]
 
     About:  Recursively copy a random number of files to another dir,
     flatten to destination dir, files must have uniq names, not just uniq path
@@ -37,46 +40,41 @@ rnd_copy
 # (c) kevin mulholland, moodfarm@cpan.org
 # this code is released under the Perl Artistic License
 
-use 5.10.0;
-use strict;
-use warnings;
-use Path::Tiny;
-use YAML;
-use App::Basis;
-
-my $verbose;
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use Path::Tiny ;
+use YAML ;
+use App::Basis ;
 
 # -----------------------------------------------------------------------------
 
-sub get_files {
-    my ($dir) = @_;
-    my %files;
+sub get_files
+{
+    my ($dir) = @_ ;
+    my %files ;
 
-    my $iter = path($dir)->iterator( { recurse => 1 } );
+    my $iter = path($dir)->iterator( { recurse => 1 } ) ;
     while ( my $path = $iter->() ) {
-        next if ( $path->is_dir );
-        my $fname = $path->stringify;
-        my $base  = $path->basename;
+        next if ( $path->is_dir ) ;
+        my $fname = $path->stringify ;
+        my $base  = $path->basename ;
         if ( $files{$base} ) {
-            warn "File $fname is not uniq, $files{$base} already uses this filename";
-        }
-        else {
-            $files{$base} = $fname;
+            verbose(
+                "File $fname ($base} is not uniq, $files{$base} already uses this filename"
+            ) ;
+        } else {
+            $files{$base} = $fname ;
         }
     }
 
-    return \%files;
-}
-
-sub verbose {
-    my ($msg) = @_;
-    say STDERR $msg if ( $msg && $verbose );
+    return \%files ;
 }
 
 # -----------------------------------------------------------------------------
 # main
 
-my $program = get_program();
+my $program = get_program() ;
 
 my %opt = init_app(
     help_text => "Recursively copy a random number of files to another dir,\n"
@@ -88,11 +86,11 @@ my %opt = init_app(
         'n=i'       => {
             desc     => 'number of files to copy',
             default  => 1,
-            validate => sub { my $val = shift; $val > 0; },
+            validate => sub { my $val = shift ; $val > 0 ; },
         },
         'src|s=s' => {
             desc     => 'Source directory of files',
-            validate => sub { my $dir = shift; -d $dir; },
+            validate => sub { my $dir = shift ; -d $dir ; },
             required => 1
         },
         'dest|d=s' => {
@@ -101,59 +99,58 @@ my %opt = init_app(
         },
         'link|l' => 'Create symlinks rather than copy files',
     }
-);
-
-$verbose = $opt{verbose};
+) ;
 
 # create destination if needed
 if ( !-d $opt{dest} ) {
-    path( $opt{dest} )->mkpath;
-    verbose("Created dest $opt{dest}");
+    path( $opt{dest} )->mkpath ;
+    verbose("Created dest $opt{dest}") ;
 }
 
-my $src  = get_files( $opt{src} );
-my $dest = get_files( $opt{dest} );
+my $src  = get_files( $opt{src} ) ;
+my $dest = get_files( $opt{dest} ) ;
 
 # we will keep the list of files copied in this file
-my $copyfile = fix_filename( $opt{src} );
-$copyfile =~ s|[/ '"]|-|g;
-$copyfile = "$opt{dest}/.$copyfile";
+my $copyfile = fix_filename( $opt{src} ) ;
+$copyfile =~ s/^\///g ;
+$copyfile =~ s|[/ '"]|-|g ;
+$copyfile = "$opt{dest}/.$copyfile" ;
+
 if ( -f $copyfile ) {
     foreach my $l ( path($copyfile)->lines ) {
-        my ( $b, $f ) = split( /\|/, $l );
-        $dest->{$b} = $f;
+        my ( $b, $f ) = split( /\|/, $l ) ;
+        $dest->{$b} = $f ;
     }
 }
 
 # remove all the entries that are in dest from src
 foreach my $f ( keys %$dest ) {
-    delete $src->{$f};
+    delete $src->{$f} ;
 }
 
 # now copy some files
 for ( my $i = 0; $i < $opt{n}; $i++ ) {
-    my @keys  = keys %$src;
-    my $count = scalar(@keys);
+    my @keys  = keys %$src ;
+    my $count = scalar(@keys) ;
     if ( !$count ) {
-        verbose("There are no more files to copy");
-        last;
+        verbose("There are no more files to copy") ;
+        last ;
     }
 
     # get a random filename
-    my $r = int( rand($count) );
-    my $f = $keys[$r];
+    my $r = int( rand($count) ) ;
+    my $f = $keys[$r] ;
     if ( $opt{link} ) {
-        verbose("Linking $src->{$f} -> $opt{dest}/$f");
-        symlink( $src->{$f}, "$opt{dest}/$f" );
-    }
-    else {
-        verbose("Copying $src->{$f} -> $opt{dest}/$f");
-        path( $src->{$f} )->copy("$opt{dest}/$f");
+        verbose("Linking $src->{$f} -> $opt{dest}/$f") ;
+        symlink( $src->{$f}, "$opt{dest}/$f" ) ;
+    } else {
+        verbose("Copying $src->{$f} -> $opt{dest}/$f") ;
+        path( $src->{$f} )->copy("$opt{dest}/$f") ;
     }
 
     # keep track of this in the copyfile
-    path($copyfile)->append("$f|$src->{$f}\n");
+    path($copyfile)->append("$f|$src->{$f}\n") ;
 
     # and remove from list of available
-    delete $src->{$f};
+    delete $src->{$f} ;
 }

@@ -1,51 +1,106 @@
 #!/bin/bash
 # quick script to build the documentation and make a release
 
+PROGRAM=`basename $0`
+
+function show_usage  {
+    arg=$1
+    err=$2
+
+    if [ "$err" == "" ] ; then
+        err=1
+    fi
+
+    echo "make a release to CPAN and github of the current directory
+
+    usage: $PROGRAM [-h] 
+
+        -h    This help
+
+"
+    if [ "$arg" != "" ] ; then
+        echo "$arg
+"
+    fi
+    exit $err
+}
+
+# process command line args
+
+while getopts “h” OPTION
+do
+    case $OPTION in
+        h) show_usage ''
+          ;;
+        *) show_usage ''
+          ;;
+    esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
 if [ ! -f dist.ini ] ; then
-  echo "You need to be in a directory with a dist.ini file"
-  exit 2
+    echo "You need to be in a directory with a dist.ini file"
+    exit 2
 fi
 
 if [ ! -f Changes ] ; then
-  echo "There is no Changes file"
-  exit 2  
-fi
-
-# install locally
-dzil install
-if [ "$?" != "0" ] ; then
-  echo "Software is not building, cannot release"
-  exit 2
+    echo "There is no Changes file"
+    exit 2  
 fi
 
 # work out if the Change file is up to date
-version=`grep 'version =' dist.ini |awk -F'=' '{print $2}'|tr -d ' '`
-change_date=`grep "^$version" Changes |awk '{print $2}'|tr -d ' '`
+version=`grep -P '^version\s?=' dist.ini |awk -F'=' '{print $2}'|tr -d ' '`
+change_date=`grep "$version" Changes |awk '{print $2}'|tr -d ' '`
 
 # check to see if the version is dated
 if [ "$change_date" == "" ] ; then
-  echo "There is no date next to the version change $version"
-  exit 2    
+    echo "There is no date next to the version change $version"
+    exit 2    
+fi
+
+# install locally
+dzil clean
+proj=`basename $PWD`
+rm -rf  $proj-$version $proj-$version.tar.gz
+
+# Device-BlinkStick-0.4.0.tar.gz
+#     Device-BlinkStick-0.4.0/
+
+dzil install
+if [ "$?" != "0" ] ; then
+    echo "Software is not building, cannot release"
+    exit 2
 fi
 
 echo " "
 
 # do documentation update if needed and we are creating docs
 if [ "README.md" -a -d docs ] ; then 
-  if [ "README.md" -nt "docs/README.html" -o "README.md" -nt "docs/README.pdf" ] ; then
-    echo "Updating documentation"
-    ct2 README.md -o docs/README.html
-    ct2 README.md -p -o docs/README.pdf
-    git commit -m "Updating docs" docs/README.html docs/README.pdf
-  fi
+    if [ "README.md" -nt "docs/README.html" -o "README.md" -nt "docs/README.pdf" ] ; then
+        echo "Updating documentation"
+        ct2 README.md -o docs/README.html
+        ct2 README.md -p -o docs/README.pdf
+        git commit -m "Updating docs" docs/README.html docs/README.pdf
+    fi
 fi
 
 git status |grep -q "nothing to commit"
 if [ "$?" != "0" ] ; then
-  echo "Cannot make a release as there are things outstanding from git"
-  echo "" 
-  git status
-  exit 1
+    echo "Cannot make a release as there are things outstanding from git"
+    echo "" 
+    git status
+    exit 1
+fi
+
+# release to CPAN
+echo " "
+dzil release
+
+# only tweet if the release to cpan worked
+if [ "$?" != "0" ] ; then
+    echo "cannot continue, release to cpan failed"
+    exit 2
 fi
 
 # release to git
@@ -54,11 +109,8 @@ git push --tags -u origin master
 
 echo " "
 
-# and now to CPAN
-dzil release
-
 # let the world know about it
-release=`grep name dist.ini |awk -F'=' '{print $2}'|tr -d ' '`
+release=`grep -E '^name\s+=' dist.ini |awk -F'=' '{print $2}'|tr -d ' '`
 cpan="http://search.cpan.org/~moodfarm/$release"
 github="https://github.com/27escape/$release"
 tweetq "New code release: github $github or CPAN $cpan"

@@ -1,0 +1,58 @@
+#!/bin/bash
+# get the weather from wttr.in
+# other idea
+# climate(){ curl -s "http://api.wunderground.com/auto/wui/geo/ForecastXML/index.xml?query=${@:-<YOURZIPORLOCATION>}"|perl -ne '/<title>([^<]+)/&&printf "%s: ",$1;/<fcttext>([^<]+)/&&print $1,"\n"';}
+
+# include the standard library functions
+. "$HOME/bin/include/script_base"
+DEFAULT_LOCATION=$(whereami)
+WEATHER_WEBSITE="http://wttr.in"
+
+# ---------------------------------------------------------------------------
+# setup HELP for show_usage
+
+export HELP="Get the weather for a location, default Northwich
+
+    usage: $PROGRAM [-h] [location]
+
+        -h    This help
+        -v    verbose mode, enable debug output
+
+        $PROGRAM
+
+"
+
+# ---------------------------------------------------------------------------
+# clean up things whenever the script completes
+cleanup() {
+    echo ""
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+# debug off
+export LOG_LEVEL=0
+
+while getopts "hv" OPTION ; do
+    case $OPTION in
+    h) show_usage ''
+        ;;
+    v) set_verbose 1
+        ;;
+    *) show_usage ''
+        ;;
+    esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
+location=${1:-}
+location=${location:="$DEFAULT_LOCATION"}
+# ---------------------------------------------------------------------------
+#  now start the main program
+verbose "getting weather for $location"
+
+check_internet || (echo_stderr "No internet connection" ; exit)
+curl "$WEATHER_WEBSITE/$location"

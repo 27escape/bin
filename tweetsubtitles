@@ -11,7 +11,7 @@ tweetsubtitles
     > tweetsubtitles ..options..
 
     to get full help use
-    > tweetsubtitles --help   
+    > tweetsubtitles --help
 
 =head1 DESCRIPTION
 
@@ -31,20 +31,93 @@ use warnings ;
 use App::Basis ;
 use App::Basis::Config ;
 use Path::Tiny ;
-use POSIX qw(ceil) ;
-use Data::Printer ;
-
-my $QUEUE = "SloMoMovies" ;
-
-my $twitter_cmd = 'tweetq' ;
+use POSIX qw(ceil strftime) ;
+use DBI ;
+use App::Basis::Queue ;
+use Date::Manip::Date ;
 
 # -----------------------------------------------------------------------------
 
-sub tweetq
-{
-    my ( $q, $t ) = @_ ;
+use constant FIVE_DAYS => 5 * 24 * 3600 ;
 
-    run_cmd("$twitter_cmd -q '$q' \"$t\"") ;
+# -----------------------------------------------------------------------------
+
+my $QUEUE       = "SloMoMovies" ;
+my $CONFIG_FILE = "$ENV{HOME}/.tweetq" ;
+
+# -----------------------------------------------------------------------------
+# connect to the queue DB
+
+sub connect_queue
+{
+    my ( $dsn, $user, $passwd, $qname ) = @_ ;
+    my $dbh
+        = DBI->connect( $dsn, $user, $passwd,
+        { RaiseError => 1, PrintError => 0, AutoCommit => 1 } )
+        or die "Could not connect to DB $dsn" ;
+
+    if ( $dsn =~ /SQLite/i ) {
+        $dbh->do("PRAGMA journal_mode = WAL") ;
+        $dbh->do("PRAGMA synchronous = NORMAL") ;
+    }
+
+    my $queue = App::Basis::Queue->new(
+        dbh           => $dbh,
+        default_queue => $qname,
+        debug         => 0,
+    ) ;
+    return $queue ;
+}
+
+# -----------------------------------------------------------------------------
+# always create the datetime strings the same way
+sub std_datetime
+{
+    my ($secs) = @_ ;
+    $secs ||= time() ;
+    return strftime( "%Y-%m-%d %H:%M:%S UTC", gmtime($secs) ) ;
+}
+
+# -----------------------------------------------------------------------------
+# convert something like a datetime string or an epoch value into a standardised
+# datetime string and epoch value
+
+sub parse_datetime
+{
+    my ($datetime) = @_ ;
+    state $date = new Date::Manip::Date ;
+    my @ret ;
+
+    if ( !$datetime ) {
+        return wantarray ? ( undef, undef ) : undef ;
+    } elsif ( $datetime =~ /^\d+$/ ) {
+        # assume anything less than five days is a time into the future
+        $datetime += time() if ( $datetime <= FIVE_DAYS ) ;
+        @ret = ( std_datetime($datetime), $datetime ) ;
+    } else {
+        # so parse will parse in locale time not as UTC
+        $date->parse($datetime) ;
+        {
+            # if we get a warning about converting the date to a day, there
+            # must be a problem with parsing the input date string
+            local $SIG{__WARN__} = sub {
+                die "Invalid date, could not parse" ;
+            } ;
+            my $day = $date->printf("%a") ;
+        }
+
+        my $d2 = $date->printf("%O %Z") ;
+        # reparse the date to get it into UTC, best way I could think of :(
+        $date->parse($d2) ;
+
+        # secs_since_1970_GMT is epoch
+        @ret = (
+            std_datetime( $date->secs_since_1970_GMT() ),
+            $date->secs_since_1970_GMT()
+        ) ;
+    }
+
+    return wantarray ? @ret : $ret[0] ;
 }
 
 # -----------------------------------------------------------------------------
@@ -69,10 +142,55 @@ my %opt = init_app(
         'queue|q=s' => {
             desc    => 'Queue to use',
             default => $QUEUE,
-        }
+        },
+        'minutes|m=i' => {
+            desc    => 'Minutes between updates',
+            default => 60
+        },
+        'activates|a=s' => {
+            desc =>
+                'Parsable UTC datetime after which the tweetsubtitles should start',
+        },
     }
 ) ;
 $opt{hashtag} = "#$opt{hashtag}" if ( $opt{hashtag} !~ /^#/ ) ;
+
+# lets have the config named after this program
+my $cfg = App::Basis::Config->new(
+    filename     => $CONFIG_FILE,
+    die_on_error => 1
+) ;
+
+if ( !$cfg ) {
+    msg_exit( "Could not load config file $CONFIG_FILE", 2 ) ;
+}
+
+my $q = $cfg->get("/tweetq/queue") ;
+if ( !$q || !$q->{dsn} ) {
+    msg_exit( "No queue for $opt{queue} setting in $CONFIG_FILE", 2 ) ;
+}
+
+$q->{prefix} ||= "/" ;
+my $theq
+    = connect_queue( $q->{dsn}, $q->{user}, $q->{password},
+    $q->{prefix} . $opt{queue} ) ;
+
+if ( !$theq ) {
+    msg_exit( "Could not connect to queue $q->{dsn}", 2 ) ;
+}
+
+my $seconds = $opt{minutes} * 60 ;
+
+if ( !$opt{activates} ) {
+    my $last = $theq->peek( position => 'last' ) ;
+    # possibly there is no last item, so default to 'now' in that case
+    $last = {activates => 'now'} if( !$last );
+    my ( $a, $e ) = parse_datetime( $last->{activates} ) ;
+    $e += $seconds ;    # make it ??s after the last one
+                              # and set the activation time
+    $opt{activates} = std_datetime($e) ;
+}
+my ( $activates, $epoch ) = parse_datetime( $opt{activates} ) ;
 
 my @lines = path( $opt{file} )->lines_utf8 ;
 my @subtitles ;
@@ -88,26 +206,38 @@ for ( my $i = 0; $i < scalar(@lines); $i++ ) {
             $s .= "$lines[$i]\n" ;
             $i++ ;
         }
-        $s =~ s/\r//gsm ;       # remove carridge returns
+        $s =~ s/\r//gsm ;    # remove carridge returns
         $s =~ s/\n$//sm ;
-        $s =~ s/\n\n/\n/gsm ;
-        $s =~ s/\n\n/\n/gsm ;
-        $s =~ s/"/'/gsm ;       # we cannot allow double quotes
-        $s =~ s/^-/ -/gsm
-            ;    # if lines start with -, tweetq will think they are options
+# $s =~ s/\n\n/\n/gsm ;
+# $s =~ s/\n\n/\n/gsm ; # really should not have to do this twice, shows a problem
+# should it be
+        $s =~ s/\n{2,}/\n/gsm ;  # compress multiple new lines to a single one
+        $s =~ s/"/'/gsm ;        # we cannot allow double quotes
         push @subtitles, $s ;
     }
 }
 if (@subtitles) {
     my $hours = scalar(@subtitles) ;
     my $days  = ceil( $hours / 24 ) ;
-    tweetq( $opt{queue},
-        "New movie $opt{hashtag}, will take $hours hours or about $days days to complete, stand by..."
+    my $msg
+        = "New movie $opt{hashtag}, will take $hours hours or about $days days to complete, stand by..."
+        ;
+
+# upgrade the add is where I would add the after variable and increment it by 1 hour
+    my $resp = $theq->add(
+        data      => { tweet => $msg },
+        activates => std_datetime($epoch)
     ) ;
+    $epoch += $seconds ;
 
     #say "subtitles " .p( @subtitles) ;
-    tweetq( $opt{queue}, "$_ $opt{hashtag}" ) foreach @subtitles ;
-
+    foreach my $m (@subtitles) {
+        $resp = $theq->add(
+            data      => { tweet => "$m$opt{hashtag}" },
+            activates => std_datetime($epoch)
+        ) ;
+        $epoch += $seconds ;
+    }
 } else {
     say STDERR "Could not find any things that looked like subtitles" ;
 }

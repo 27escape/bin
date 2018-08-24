@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 # wrapper around get_iplayer
-#
+# NOTE: categories are broken, currently do not exist in the TV table
 # (c) kevin Mulholland 2012, moodfarm@cpan.org
 # this code is released under the Perl Artistic License
 
@@ -9,8 +9,9 @@
 use 5.16.0;
 use strict;
 use warnings;
-use Data::Dumper qw( Dumper);
+use Data::Printer;
 use POSIX qw(strftime);
+use lib "$ENV{HOME}/src/lib" ;
 use Iplayer::Schema;
 use App::Basis;
 
@@ -66,10 +67,10 @@ sub show_matches {
     my $search_time = time() - ( $recent * ONE_DAY );
 
     my $search = { timeadded => { '>=' => $search_time } };
-    if ( !$kids ) {
-        $search->{categories}->{not_like} = '%children%';
-        $search->{channel}->{not_like}    = 'CBeebies';
-    }
+    # if ( !$kids ) {
+    #     $search->{categories}->{not_like} = '%children%';
+    #     $search->{channel}->{not_like}    = 'CBeebies';
+    # }
 
     if ($match) {
         $search->{'-or'} = {
@@ -78,11 +79,13 @@ sub show_matches {
         };
     }
 
-    # say "search -> " . Dumper($search) ;
+    # say "search -> " ;
+    # p($search) ;
 
     my $resultset = $orm->resultset('Tv')->search( $search, { order_by => ['name'] } );
 
-    # say "query " . Dumper($resultset->as_query) ;
+    # say "query " ;
+    # p($resultset->as_query) ;
     if ( $resultset->count ) {
         say "";
         my @results = $resultset->all;
@@ -136,7 +139,7 @@ my %opt = init_app(
     help_text => "Wrapper around get_iplayer
 "
     , help_cmdline => "$program [--help] [options] [shows to match]
-  $program 
+  $program
     will just show the output from 'get_iplayer --category=$DEFAULT_CATEGORIES'
   $program --add='123,345,222'
     add items into record queue
@@ -205,7 +208,7 @@ elsif ( !$suggest && $opt{categories} ) {
     $opt{categories} =~ s/ /,/gsm;
     $opt{categories} =~ s/\n/,/gsm;
 
-    show_categories( $orm, [ split( /,/, $opt{categories} ) ], $opt{recent}, $opt{kids} );
+    # show_categories( $orm, [ split( /,/, $opt{categories} ) ], $opt{recent}, $opt{kids} );
     $done = 1;
 }
 elsif ( $opt{add} || $suggest ) {
@@ -215,12 +218,12 @@ elsif ( $opt{add} || $suggest ) {
     $command .= "--pvrqueue $opt{add}";
 }
 elsif ( $opt{fetch} ) {
-    $command .= '--pvr';
+    $command .= '--pvr --pid-recursive';
 
     # Iplayer::Schema::Download->has_many('name' => 'Iplayer::Schema::Tv', 'name');
 }
 elsif ( !$opt{suggest} && !$opt{fetch}) {
-    show_categories( $orm, \@categories, $opt{recent}, $opt{kids} );
+    # show_categories( $orm, \@categories, $opt{recent}, $opt{kids} );
     $done = 1;
 }
 
@@ -228,7 +231,7 @@ if ( !$done ) {
 
     # no need for a fancy IPC type execute function as we want the output to the
     # screen as it happens
-    say "Using '$command'" if ( $opt{verbose} );
+    verbose( "Using '$command'") ;
     my ( $ret, $out, $err ) = run_cmd($command);
 
     # $out =~ s/^get_iplayer(.*?)details\.//sm;
@@ -249,12 +252,16 @@ if ( !$done ) {
     say STDERR $err if ($err);
 
     if ( $opt{add} && $opt{fetch} ) {
-
         # do fetch as a separate command if combined with add
         $command = $IPLAYER_CMD . ' --pvr';
-        say "Using '$command'" if ( $opt{verbose} );
+        verbose( "Using '$command'") ;
         my $started = time() ;
         my ( $ret, $out, $err ) = run_cmd($command);
+        # just output the stuff we have downloaded
+        # weed out anything not matching
+        # INFO: PVR Run: 'ONCE_Dangerous_Visions_Future_Home_of_the_Living_God_-_Episode_1_b0b50312'
+        # could do this better with a negative match probs
+        $out = join( "\n", grep ( /PVR Run:\s+'.*?'/, split( /\n/, $out)) ) ;
         say $out ;
         say STDERR $err if ($err);
         if( $started + 30 < time()) {

@@ -1,0 +1,95 @@
+#!/usr/bin/env perl
+# PODNAME: mdindex - simple script to index a markdown files and the PDF if has generated
+# ABSTRACT: index markdown files reay for a webage to display them
+
+=head1 NAME
+
+ mdindex
+
+=head1 SYNOPSIS
+
+    > mdindex ..options..
+
+    to get full help use
+    > mdindex --help   
+
+=head1 DESCRIPTION
+
+Description of what your application does
+
+=cut
+
+#
+# (c) yourname, your@email.address.com
+# this code is released under the Perl Artistic License
+
+use 5.10.0 ;
+use strict;
+use warnings;
+use POSIX qw(strftime) ;
+use App::Basis;
+use JSON ;
+use Path::Tiny; 
+
+# -----------------------------------------------------------------------------
+# find the index file for the passed file, default to current dir if none found
+# walk up the file tree until something is found
+# returns the path to the index
+sub find_mdindex {
+    my ($path) = @_ ;
+
+
+}
+
+# -----------------------------------------------------------------------------
+# basic debug to STDERR, redirect to anywhere you like
+
+sub other_debug {
+    my ($lvl, $debug) = @_;
+    if(!$debug) {
+        $debug = $lvl ;
+        # set a default level
+        $lvl = 'INFO' ;
+    }
+
+    say STDERR strftime( '%Y-%m-%d %H:%M:%S', gmtime( time() ) ) . " [$lvl] " . get_program() . " " . $debug;
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program();
+
+my %opt = init_app(
+    help_text    => "Index markdown files and the PDFs that are generated from it. 
+Will look for a .mdindex file up the filetree, if not found will create in dir local to the md file.",
+    help_cmdline => "md_file (pdf_file)",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+    }
+);
+
+set_debug( \&other_debug );
+
+if ( $opt{verbose} ) {
+    debug( "INFO", "Started");
+}
+
+my ($md_file, $pdf) = $ARGV[0..1] ;
+
+$md_file = fix_filename( $md_file) ;
+if( ! -f $md_file || $md_file !~ /\.md(own)?$/i) {
+    show_usage( "Invalid or missing md_file") ;
+}
+
+$pdf = fix_filename( $pdf) if( $pdf) ;
+if( $pdf && ! -f $pdf) {
+    print "pdf_file does not seem to exist, continuing anyway" ;
+}
+
+my $data = path( $md_file)->slurp_utf8() ;
+my @lines = split( /\n/, $data) ;
+# we expect the first 20ish lines may contain some key-value data
+
+# find the index file to update
+my $md_index = find_mdindex( $md_file) ;

@@ -1,15 +1,56 @@
 #!/bin/bash
-# PODNAME: cheerstick
-# ABSTRACT: make blinkstick respond to cheerlights
+# PODNAME: cheerup
+# ABSTRACT: make hypnocube and blinkstick respond to cheerlights
 
 # to change global cheerlights colors
 # http://www.cheerlights.com/control-cheerlights
 # Example Tweet: @CheerLights Paint the town red
 
-  # fetch the cheerlights status and update the hypnocube/stick
-  color=`curl -s http://api.thingspeak.com/channels/1417/field/1/last.json | perl -ne '/.*?"field1":"(.*?)"/ ; print "$1";'`
-  cube sphere $color : update
-  stick -c $color
+PROGRAM=`basename $0`
+
+function show_usage  {
+    arg=$1
+    err=$2
+
+    if [ "$err" == "" ] ; then
+        err=1
+    fi
+
+    echo "make hypnocube and blinkstick respond to global cheerlights setting
+
+    usage: $PROGRAM [-h]
+
+        -h    This help
+
+"
+    if [ "$arg" != "" ] ; then
+        echo "$arg
+"
+    fi
+    exit $err
+}
+
+# process command line args
+
+while getopts “h” OPTION
+do
+  case $OPTION in
+    h) show_usage ''
+      ;;
+    *) show_usage ''
+      ;;
+  esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
+
+# fetch the cheerlights status and update the hypnocube/stick
+color=`curl -s http://api.thingspeak.com/channels/1417/field/1/last.json | perl -ne '/.*?"field1":"(.*?)"/ ; print "$1";'`
+cube -u all $color
+# photon "cheerlights $color"
+# make it work on all LEDs on pro based devices too
+# stick -d strip -b 20 -c $color -m 3 --blink 5
 
 # perl pod may get added so lets exit before thats an issue
 exit ;

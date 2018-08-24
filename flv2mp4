@@ -1,0 +1,80 @@
+#!/bin/bash
+# convert FLV video files into MP4 
+# ---------------------------------------------------------------------------
+
+FLV="$1"
+DIR=`dirname $FLV`
+FILE=`basename $FLV .flv`
+MP4="$DIR/$FILE.mp4"
+QUIET="0"
+
+# ---------------------------------------------------------------------------
+
+function usage() {
+  echo "
+  usage: $0 option flv_file
+
+  convert flv video file into MP4
+
+  OPTIONS:
+    -h    this help
+    -q    do it quietly
+
+"
+}
+
+# ---------------------------------------------------------------------------
+
+function debug() {
+    if [ $QUIET != "1" ] ; then
+        echo "$1"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+
+# process command line args
+
+while getopts “hq” OPTION
+do
+  case $OPTION in
+    h) usage
+      exit 1
+      ;;
+    q) QUIET="1"
+      ;;
+    *) usage
+      exit 1
+      ;;
+  esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
+# ---------------------------------------------------------------------------
+
+if [ ! -f "$FLV" ] ; then
+    debug "Input file $FLV does not exist"
+    exit 1
+fi
+
+# check that file is FLV before we progress
+echo "$FLV"|grep -Pqi "\.flv$"
+if [ "$?" != "0" ] ; then
+    debug "Input file $FLV needs to end with .flv"
+    exit 1
+fi
+
+mediainfo "$FLV"|grep -Pqi "Format\s+:\s+Flash"
+if [ "$?" != "0" ] ; then
+    debug "Input file $FLV does not appear to be a FLV file"
+    exit 1
+fi  
+
+mediainfo "$FLV"|grep -Pqi "Format/Info\s+:\s+.*?video"
+if [ "$?" != "0" ] ; then
+    debug "Input file $FLV does not appear to be a video FLV file"
+    exit 1
+fi  
+
+ffmpeg -y -loglevel quiet -i "$FLV" -vcodec copy -acodec copy "$MP4"

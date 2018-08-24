@@ -1,0 +1,61 @@
+#!/usr/bin/env perl
+# PODNAME: mqs
+# ABSTRACT: Simple script to subscribe listen to a mosquito topic and print out whats heard
+
+=head1 NAME
+
+mqs
+
+=head1 SYNOPSIS
+
+    >   ..options..
+
+    to get full help use
+    >  --help
+
+=head1 DESCRIPTION
+
+Simple script to subscribe listen to a mosquito topic and print out whats heard
+
+mostquito_sub does something similar, however it does not print out the topic which makes things
+awkward in a scripting environment
+
+=cut
+
+#
+# (c) yourname, your@email.address.com
+# this code is released under some License
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+use AnyEvent::MQTT ;
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+    help_text    => "Simple script to subscribe listen to a mosquito topic and print out whats heard",
+    help_cmdline => "extra commandline args",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'topic|t=s' => { desc => 'topic to subscribe to', required => 1, },
+    },
+) ;
+
+my $mqtt = AnyEvent::MQTT->new ;
+my $quit = AnyEvent->condvar;
+my $cv   = $mqtt->subscribe(
+    topic    => $opt{topic},
+    callback => sub {
+        my ( $topic, $message ) = @_ ;
+        say "$topic:  $message" ;
+    }
+) ;
+# run and wait until told to finish
+$quit->recv ;
+
+

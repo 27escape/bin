@@ -201,7 +201,7 @@ show_usage("Could not match to a google account") if ( !$cfg->("/accounts/$accou
 
 my $user = $cfg->get('/accounts/$account/user') ;
 my $pass = $cfg->get('/accounts/$account/pass') ;
-        
+
 msg_exit( "Could not find pushover in account file", 2) if( !$user && !$pass) ;
 
 my @rules = fetch_rules($control) ;
@@ -249,7 +249,8 @@ do {
                 # do action
                 my $cmd = $rule->{activity} ;
                 $cmd =~ s|\$subject|$mail->{subject}|gsmi ;
-                $cmd =~ s|\$body|$mail->{body}|gsmi ;
+                # allow a range of options for the body
+                $cmd =~ s|(\$body|\$message|\$content)|$mail->{body}|gsmi ;
                 my $datestr = strftime( "%Y-%m-%d %H:%M:%S", localtime( $mail->{date} ) ) ;
                 $cmd =~ s|\$date|$datestr}|gsmi ;
                 say "matched $rule->{label}" if ( $opt{verbose} && !$daemon) ;

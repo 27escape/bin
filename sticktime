@@ -1,0 +1,152 @@
+#!/usr/bin/env perl
+# PODNAME: sticktime
+# ABSTRACT: Show the time on a blickstick pro with 12 segment neopixel attached or a 8 led blink strip or square
+
+=head1 NAME
+
+sticktime
+
+=head1 SYNOPSIS
+
+Syntax: sticktime [options]
+
+About:  Show the time on a blickstick pro with 12 segment neopixel attached or a 8 led blink strip or square
+
+[options]
+    -h, -?, --help     Show help
+    --daemon           Run as a daemon
+    --hours            Color for hour hand [DEFAULT: oc-grape-5]
+    --mins             Color for minute hand [DEFAULT: teal]
+    --name             use device that has this name [DEFAULT: pro]
+    --offset           Offset along the leds to align the numbers or orientation of device
+    --secs             Color for second hand [DEFAULT: red]
+    -s, --serial       Use device that has this serial number
+    -v, --verbose      Dump extra useful information
+
+=head1 DESCRIPTION
+
+Show the time on a blickstick pro with 12 segment neopixel attached or a 8 led blink strip or square
+See L<http://blinkstick.com> for devices
+
+Idea taken from https://github.com/arvydas/blinkstick-python/wiki/BlinkStick-Pro%3A-Display-analogue-clock-on-16-LED-ring
+
+=cut
+
+# (c) Kevin Mulholland, moodfarm@cpan.org
+# this code is released under the Perl Artistic License
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+use Device::BlinkStick ;
+use WebColors ;
+use Time::HiRes qw(usleep) ;
+
+use constant EMULATE_DELAY_USECS => 500 ;
+
+# -----------------------------------------------------------------------------
+
+# loop updating the time every 5 secs
+sub loop_time
+{
+    my ( $stick, $opt, $delay ) = @_ ;
+    $delay ||= $stick->type eq 'pro' ? 5 : 8 ;
+    my $leds = $stick->type eq 'pro' ? 12 : 8 ;
+    $stick->set_leds($leds) ;
+
+    $opt->{offset} //= 0 ;
+
+    while (1) {
+        my %pos ;
+        my ( $secs, $mins, $hours ) = localtime( time() ) ;
+        # verbose("$hours:$mins:$secs") ;
+        if ( $stick->type eq 'pro' ) {
+            # we know that each of the 12 leds is 5s or 5 mins
+            $hours = $hours % 12 ;
+            $mins  = int( $mins / 5 ) ;
+            $secs  = int( $secs / 5 ) ;
+        } else {
+            # using an 8 pos strip or square
+            $hours = int( ( ( $hours % 12 ) / 12 ) * 8 ) ;
+            $mins  = int( ( $mins / 60 ) * 8 ) ;
+            $secs  = int( ( $secs / 60 ) * 8 ) ;
+        }
+        # verbose("as positions $hours:$mins:$secs") ;
+
+        # we update h, then m, then s - to give the impression of clock 'hands' over each other
+        $pos{$hours} = $opt->{hours} ;
+        $pos{$mins}  = $opt->{mins} ;
+        $pos{$secs}  = $opt->{secs} ;
+
+        # cycle through positions deciding if it should be a hand or clear
+        for ( my $i = 0; $i < $leds; $i++ ) {
+            my @color = ( 0, 0, 0 ) ;    # black as defaukt
+            if ( $pos{$i} ) {
+                @color = @{ $pos{$i} } ;
+            }
+            $stick->set_color( @color, 0, $opt->{offset} + $i ) ;
+            # need to wait a short time to allow usb_write to cycle through
+            usleep(EMULATE_DELAY_USECS) ;
+        }
+        # no need to update any faster
+        sleep($delay) ;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# main
+
+my %opt = init_app(
+    help_text => "Show the time on a blickstick pro with 12 segment neopixel attached or a 8 led blink strip or square",
+    help_cmdline => "",
+    options      => {
+        'verbose|v'  => 'Dump extra useful information',
+        'serial|s=s' => 'Use device that has this serial number',
+        'name=s'     => { desc => 'use device that has this name', default => '' },
+        'hours=s'    => { desc => 'Color for hour hand', default => 'oc-grape-5' },
+        'mins=s'     => { desc => 'Color for minute hand', default => 'teal' },
+        'secs=s'     => { desc => 'Color for second hand', default => 'red' },
+        'daemon|d'   => 'Run as a daemon',
+        'offset=i'   => { desc => "Offset along the leds to align the numbers or orientation of device", default => 0 },
+    },
+) ;
+
+my $bs = Device::BlinkStick->new() ;
+
+my $stick ;
+if ( $opt{serial} || $opt{name} ) {
+    # decide which parameter to use
+    my $name = $opt{serial} || $opt{name} || $opt{device} ;
+    # do we have it
+    $stick = $bs->find($name) ;
+
+    if ( !$stick ) {
+        msg_exit( "A matching device could not be found", 1 ) ;
+    }
+    # now check if it is a pro
+    if ( $stick->type() eq 'original' ) {
+        msg_exit( "This device is not a pro device", 1 ) ;
+    }
+}
+if ( !$stick ) {
+    show_usage("The name of the device or its serial number is required") ;
+}
+
+$stick->brightness(10) ;
+
+if ( $opt{daemon} ) {
+    # parent should exit
+    exit(0) if ( !daemonise() ) ;
+}
+
+foreach my $c (qw/hours mins secs/) {
+    my ( $r, $g, $b ) = colorname_to_rgb( $opt{$c} ) ;
+    if ( !defined $r ) {
+        msg_exit( "Color for $c is not valid", 1 ) ;
+    }
+    $opt{$c} = [ $r, $g, $b ] ;
+}
+
+# loop forever in the foreground
+loop_time( $stick, \%opt, 5 ) ;

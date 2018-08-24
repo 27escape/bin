@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# base for lots of scripts
+# utility functions etc
+# ---------------------------------------------------------------------------
+
+# ideas taken from
+#   http://redsymbol.net/articles/unofficial-bash-strict-mode/
+#   https://github.com/chilicuil/learn/blob/master/sh/lib
+#   http://bash3boilerplate.sh/
+#   https://nicolaw.uk/#BashStackTraces:CodeSnippets%20BashStackTraces
+
+# ---------------------------------------------------------------------------
+# see https://bash.cyberciti.biz/bash-reference-manual/The-Set-Builtin.html#The-Set-Builtin
+# for list of setable things
+# setup things to mimic strict mode
+
+# set -u  # Exit if undefined variable is used.
+# set -e  # Exit after first command failure.
+# set -o pipefail  # Exit if any part of the pipe fails.
+
+# Exit on error. Append || true if you expect an error.
+# set -o errexit
+# Exit on error inside any functions or subshells.
+# set -o errtrace
+# Do not allow use of undefined vars. Use ${VAR:-} to use an undefined VAR
+set -o nounset
+# Catch the error in case mysqldump fails (but gzip succeeds) in `mysqldump |gzip`
+set -o pipefail
+# Turn on traces, useful while debugging but commented out by default
+# set -o xtrace
+
+# trap things like missing commands
+# set -E
+# trap "die 'Unknown command' 127" ERR
+
+# ---------------------------------------------------------------------------
+
+# we will call set_verbose "" after the function is defined
+PROGRAM=$(basename "$0")
+# used to stop the output of say function
+BE_QUIET=""
+
+# when running on shepherd this file may exist and have useful info to allow
+# accessing the X-window DBUS session
+# save_dbus_connect is run from autostart when I log into X-windows
+if [ -f "$HOME/.dbus-connect" ] ; then
+    . "$HOME/.dbus-connect"
+fi
+
+# functions first, then a bit extra check stuff at the end
+# -----------------------------------------------------------------------------
+
+# Define the environment variables (and their defaults) that this script depends on
+# set_verbose will alter LOG_LEVEL to 7 or back to 6
+LOG_LEVEL="${LOG_LEVEL:-6}" # 7 = debug -> 0 = emergency
+NO_COLOR="${NO_COLOR:-}"    # true = disable color. otherwise autodetected
+
+# -----------------------------------------------------------------------------
+# these are a bunch of functions to output to STD out with datetime
+# controlled by $LOG_LEVEL
+# -----------------------------------------------------------------------------
+_fmt () {
+    local color_debug="\x1b[35m"
+    local color_info="\x1b[32m"
+    local color_notice="\x1b[34m"
+    local color_warning="\x1b[33m"
+    local color_error="\x1b[31m"
+    local color_critical="\x1b[1;31m"
+    local color_alert="\x1b[1;33;41m"
+    local color_emergency="\x1b[1;4;5;33;41m"
+    local colorvar=color_$1
+
+    local color="${!colorvar:-$color_error}"
+    local color_reset="\x1b[0m"
+    if [ "${NO_COLOR}" = "true" ] || [[ "${TERM:-}" != "xterm"* ]] || [ -t 1 ]; then
+        # Don't use colors on pipes or non-recognized terminals
+        color=""; color_reset=""
+    fi
+    echo -e "$(date -u +"%Y-%m-%d %H:%M:%S UTC") ${color}$(printf "[%9s]" ${1})${color_reset}";
+}
+emergency() {
+    echo "$(_fmt emergency) $*" 1>&2 || true; exit 1;
+}
+alert() {
+    [ "${LOG_LEVEL}" -ge 1 ] && echo "$(_fmt alert) $*" 1>&2 || true;
+}
+critical()  {
+    [ "${LOG_LEVEL}" -ge 2 ] && echo "$(_fmt critical) $*" 1>&2 || true;
+}
+error() {
+    [ "${LOG_LEVEL}" -ge 3 ] && echo "$(_fmt error) $*" 1>&2 || true;
+}
+warning() {
+    [ "${LOG_LEVEL}" -ge 4 ] && echo "$(_fmt warning) $*" 1>&2 || true;
+}
+notice() {
+    [ "${LOG_LEVEL}" -ge 5 ] && echo "$(_fmt notice) $*" 1>&2 || true;
+}
+info() {
+    [ "${LOG_LEVEL}" -ge 6 ] && echo "$(_fmt info) $*" 1>&2 || true;
+}
+debug() {
+    [ "${LOG_LEVEL}" -ge 7 ] && echo "$(_fmt debug) $*" 1>&2 || true;
+}
+
+# ---------------------------------------------------------------------------
+# general output to STDERR
+echo_stderr() {
+    msg=${1}
+    echo "$msg" > /dev/stderr
+}
+
+# ---------------------------------------------------------------------------
+# say is perls version of echo
+say() {
+    if [ "$BE_QUIET" == "" ] ; then
+        echo $*
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# set verbose on or off
+set_verbose() {
+    arg=${1:-}
+    if [ $arg -eq 1  ] ; then
+        VERBOSE=1
+        LOG_LEVEL=7
+    else
+        VERBOSE=""
+        # debug level is the default
+        LOG_LEVEL=6
+    fi
+}
+# now we have the function, call it first time around
+set_verbose 0
+
+# ---------------------------------------------------------------------------
+# say something if we are in verbose mode
+verbose() {
+    if [ "$VERBOSE" != "" ] ; then
+        echo_stderr "$*"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# show help and exit, requires HELP variable to be set
+show_usage() {
+    arg=${1:-}
+    err=${2:-}
+    # set default err level as 1
+    lvl=${err:=1}
+
+    if [ "$HELP" != "" ] ; then
+        echo "$HELP"
+    else
+        echo "\$HELP has not been defined"
+    fi
+
+    if [ "$arg" != "" ] ; then
+        echo "$arg
+"
+    fi
+    exit $lvl
+}
+
+# -----------------------------------------------------------------------------
+# provide perl style die, will exit after call
+# taken from http://stackoverflow.com/questions/7868818/in-bash-is-there-an-equivalent-of-die-error-msg
+# die "File not found"
+# die
+die() {
+    local error=${1:-Undefined error}
+    # set default err level as 1
+    # bit of a shim to assign nothing and then default it, thanks to set -u
+    local lvl=${2:-}
+    lvl=${lvl:=1}
+    # not mentioning the fucntion\${FUNCNAME[1]}
+    echo_stderr "die at $PROGRAM line ${BASH_LINENO[0]} - $error"
+    exit $lvl
+}
+
+# -----------------------------------------------------------------------------
+# provide perl style warning or warn
+# warn "File not found"
+# warn
+warn() {
+    local error=${1:-Undefined error}
+    echo_stderr "warning at $PROGRAM line ${BASH_LINENO[0]} - $error"
+}
+# allow alternate name, repeat to make sure we get the number
+warning() {
+    local error=${1:-Undefined error}
+    echo_stderr "warning at $PROGRAM line ${BASH_LINENO[0]} - $error"
+}
+
+# -----------------------------------------------------------------------------
+# check if file matches a previous sha1sum, if not is corrupted/changed
+# needs more work
+# stolen from twitter someplace
+sha1sum() {
+    local true_sha1sum=$1
+    local filepath=$2
+
+    read -r s _ < <(sha1sum "$filepath")
+    if [[ $s = "$true_sha1sum" ]] ; then
+        printf '%s\n' "File is OK"
+    else
+        printf '%s\n' "File is different"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# borrowed from https://github.com/alexanderepstein/Bash-Snippets/blob/master/weather/weather
+check_internet()
+{
+    printf "GET http://google.com HTTP/1.0\n\n" | nc -w 10 -q 0 google.com 80 > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        verbose "check_internet: OK"
+        return 0
+    else
+        echo "Error: no active internet connection" >&2
+    return 1
+fi
+}
+
+# -----------------------------------------------------------------------------
+# find out where I am
+# teased out of https://github.com/alexanderepstein/Bash-Snippets/blob/master/weather/weather
+whereami() {
+    country=$(curl -s ipinfo.io/country) > /dev/null
+    if [ "$country" = "US" ];then
+        city=$(curl -s ipinfo.io/city) > /dev/null
+        region=$(curl -s ipinfo.io/region) > /dev/null
+        region=$(echo "$region" | tr -dc '[:upper:]')
+        location="$city,$region"
+    else
+        location=$(curl -s ipinfo.io/loc) > /dev/null
+    fi
+    echo "$location"
+}
+
+# -----------------------------------------------------------------------------
+# taken from http://www.commandlinefu.com/commands/view/20917/convert-csv-to-json-python3-and-bash-function
+csv2json() {
+    for file in "$@" ; do
+        jname=$(basename "$file" ".json")
+        jname=$(dirname "$file")/$jname.json
+        rm -f "$jname"
+        python -c "import csv,json,fileinput; print(json.dumps(list(csv.reader(fileinput.input()))))" "$file" 1> "$jname"
+        if [ -f "$jname" ] ; then
+            echo_stderr "Created JSON $jname"
+        fi
+    done
+}
+
+# trim whitespace
+trim() {
+    local var="$*"
+    # remove leading whitespace characters
+    var="${var#"${var%%[![:space:]]*}"}"
+    # remove trailing whitespace characters
+    var="${var%"${var##*[![:space:]]}"}"
+    echo -n "$var"
+}
+
+# -----------------------------------------------------------------------------
+# to process things that may be key-value store type things we can effectively
+# split on ':' and get something before and after, useful if you are parsing an
+# array of items
+# key=$(getkey "the_key:the_value")
+# value=$(getvalue "the_key:the_value")
+# -----------------------------------------------------------------------------
+# get everything before any ':' in the passed string, drop the rest
+getkey() {
+    echo $(trim "${1%%:*}")
+}
+
+# -----------------------------------------------------------------------------
+# get the first thing after any ':' in the passed string
+getvalue() {
+    echo $(trim "${1##*:}")
+}
+
+# -----------------------------------------------------------------------------
+# for a given file, get the basic yaml keyvalue fields for the first 20 rows
+# these will be available locally as YAML_$fieldname
+yamlfields() {
+    IFS=$'\n'
+    file=$1
+
+    for line in $(head -20 $1|grep -E '^(\w+):')
+    do
+        f=$(getkey $line)
+        v=$(getvalue $line)
+        field="YAML_$f"
+        eval "$field=\$v"
+    done
+}
+# -----------------------------------------------------------------------------
+# generate a random number in some form, if no param passed will default to a
+# known max of 100
+
+random() {
+    local max=${1:-100}
+    perl -e "print int rand $max, \"\n\";"
+}
+
+# -----------------------------------------------------------------------------
+# calculate percentage as rounded integer
+# https://stackoverflow.com/questions/24284460/calculating-rounded-percentage-in-shell-script-without-using-bc
+percent() {
+    item=${1:-0}
+    total=${2:-100}
+    # echo_stderr "$item / $total"
+    echo $((200*$item/$total % 2 + 100*$item/$total))
+}
+
+# -----------------------------------------------------------------------------
+# draw a percent bar
+# https://stackoverflow.com/questions/238073/how-to-add-a-progress-bar-to-a-shell-script
+# https://github.com/fearside/ProgressBar/blob/master/progressbar.sh
+# but using unicode chars from https://en.wikipedia.org/wiki/Block_Elements#Character_table
+percentbar() {
+    let _progress=$(percent ${1:-0} ${2:-100})
+    message=${3:-}
+    if [ "$message" == "" ] ; then
+        message="Progress"
+    fi
+    let _done=(${_progress}*2)/10
+    let _left=20-$_done
+    # Build progressbar string lengths
+    _done=$(printf "%${_done}s")
+    _left=$(printf "%${_left}s")
+
+    symbol="█"   # "#"
+    nosymbol="░"  # " "
+    printf "\r$message : ${_done// /$symbol}${_left// /$nosymbol} | "
+    printf "%3d%%" "${_progress}"
+}
+
+# -----------------------------------------------------------------------------
+# things to do that are not functions
+# -----------------------------------------------------------------------------
+
+# we need to find out if someone has tried to run us as a script
+# if [ "${BASH_SOURCE[0]}" == "${0}" ] ; then
+#     HELP="This is an include file for scripts"
+#     debug "testing"
+#     show_usage "You should not call this script directly" 127
+# fi

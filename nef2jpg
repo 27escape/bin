@@ -1,0 +1,149 @@
+#!/bin/bash
+# Convert a NEF image to a JPG image
+
+# include the standard library functions
+. "$HOME/bin/include/script_base"
+
+# ---------------------------------------------------------------------------
+# setup HELP for show_usage
+
+export HELP="Convert a NEF image to a JPG image
+
+    usage:  [-h]
+
+    -h | --help      This help
+    -v | --verbose   verbose output
+    -m | --method (dcraw|dcrawe|convert|exif|exiftool)  use this method to convert the file
+
+"
+
+# ---------------------------------------------------------------------------
+# clean up things whenever the script completes
+cleanup() {
+    echo ""
+}
+trap cleanup EXIT
+
+# -----------------------------------------------------------------------------
+set_filetime() {
+    source=$1
+    file=$2
+    # maintain the same file time/date as the original
+    touch -r "$source" "$file"
+    if [[ $file =~ .jpg ]] ; then
+        # now make the exif time the same as the filetime
+        jhead -q -mkexif "$file"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+# debug off
+export LOG_LEVEL=0
+
+METHOD=dcraw
+# http://stackoverflow.com/questions/402377/using-getopts-in-bash-shell-script-to-get-long-and-short-command-line-options#402410
+# NOTE: This requires GNU getopt.
+# need to mention both short (-o) and long (--options) here
+# trailing : shows a parameter is required
+# TEMP=$(getopt -o vh --long verbose,help,cachedir: -n "$PROGRAM" -- "$@" 2>/dev/null)
+TEMP=$(getopt -o vhm: --long verbose,help,method: -n "$PROGRAM" -- "$@" 2>/dev/null)
+
+# if any parameters were bad
+if [ $? != 0 ] ; then show_usage 'Bad Parameters' ; fi
+
+# Note the quotes around `$TEMP': they are essential!
+eval set -- "$TEMP"
+
+while true; do
+    case "$1" in
+    -v | --verbose )  LOG_LEVEL=7
+    set_verbose 1
+    shift
+    ;;
+    -m | --method) METHOD=$2
+    shift 2
+    ;;
+    -h | --help ) show_usage ''
+    ;;
+    # --cachedir) CACHE_DIR="$2"
+    #     shift 2 # remove param and data
+    * ) break ;;
+    esac
+done
+# tidy up command line
+shift
+
+# ---------------------------------------------------------------------------
+#  now start the main program
+debug " started $PROGRAM"
+
+NEF=$1
+if [ ! -f "$NEF" ] ; then
+    show_usage "input file '$NEF' does not exist" 1
+fi
+JPEG=$2
+if [ "$JPEG" == "" ] ; then
+    tfile=$(basename "$NEF" ".NEF")
+    tdir=$(dirname "$NEF")
+    JPEG="$tdir/$tfile.JPG"
+fi
+
+verbose "Converting $NEF to $JPEG using $METHOD"
+
+CONVERTED=0
+rm -f "$JPEG"
+case "$METHOD" in
+    dcraw)
+        #  -c to stdout
+        # -w whitebalance from camera, -f 4 color RGB input
+        # -6  Write sixteen bits per sample instead of eight
+        # -g power toeslope
+        # options -g 1 1 or -g 2.4 12.92 for sRGB
+        # -6 -g 1 1
+        dcraw -w -f -g 2.4 12.92  -c "$NEF" | pnmtojpeg --quality 90 > "$JPEG"
+        CONVERTED=1
+    ;;
+    dcrawe)
+        # get the thumbnail from the file
+        dcraw -e -w -f -v -s all -c "$NEF" > "$JPEG"
+        CONVERTED=1
+    ;;
+    convert)
+        # http://www.imagemagick.org/script/command-line-options.php
+        # http://www.imagemagick.org/discourse-server/viewtopic.php?t=29340
+
+        # -auto-level (maybe not ideal)
+
+        # -colorspace HSL -channel lightness -equalize -colorspace RGB
+
+        # instagram effects
+        # https://code.tutsplus.com/tutorials/create-instagram-filters-with-php--net-24504
+
+        # all sorts of effects
+        # http://www.fmwconcepts.com/imagemagick/
+
+        convert "$NEF" -set colorspace RGB -colorspace sRGB -quality 90% "$JPEG"
+        CONVERTED=1
+    ;;
+    exiftool | exif)
+        exiftool -b -JpgFromRaw "$NEF" > "$JPEG"
+        CONVERTED=1
+    ;;
+    # *) show_usage "Unknown method '$METHOD'"
+    # ;;
+esac
+
+if [ "$CONVERTED" == "0" ] ; then
+    show_usage "Unknown method '$METHOD'"
+fi
+
+if [ ! -f "$JPEG" ] ; then
+    echo_stderr "Could not convert '$NEF' to '$JPEG'"
+    exit 2
+fi
+set_filetime "$NEF" "$JPEG"
+verbose "Created '$JPEG'"
+
+

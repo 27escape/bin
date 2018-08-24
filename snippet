@@ -1,0 +1,114 @@
+#!/bin/bash
+# grab a sublime snippet and dump the content text
+# so you can dump it into a file etc
+
+# include the standard library functions
+. "$HOME/bin/include/script_base"
+
+# ---------------------------------------------------------------------------
+# setup HELP for show_usage
+
+export HELP="
+
+    usage: Grab the text from a sublime snippet and either output to STDOUT or a file
+
+    $PROGRAM [-h] [-e] [-l] snippet-name [filename]
+
+    -h  this help
+    -e  open in sublime text editor
+    -l  list
+    filename to stop snippet to
+"
+
+# ---------------------------------------------------------------------------
+# clean up things whenever the script completes
+cleanup() {
+    echo ""
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# list snippets from passed directory
+list_snippets() {
+    local dir=$1
+
+    if [ -d "$dir" ] ; then
+        cd "$dir"
+        echo "We have the following snippets" ; echo
+        ls -1 *$EXT | awk -F"$EXT" '{print $1}'
+    else
+        error "Directory $dir does not exist"
+    fi
+
+}
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+# debug off
+export LOG_LEVEL=0
+SNIPPETS="$HOME/.config/sublime-text-3/Packages/User"
+EXT=".sublime-snippet"
+EDIT=0
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+while getopts "hlevx" OPTION ; do
+    case $OPTION in
+        h) show_usage ""
+            exit 1
+            ;;
+      #   u) UPDATE=1
+      #       ;;
+        l) list_snippets "$SNIPPETS"
+            exit 1
+            ;;
+        v) LOG_LEVEL=8
+            ;;
+        e) EDIT=1
+            ;;
+    esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
+# ---------------------------------------------------------------------------
+
+if [ "$1" == "" ] ; then
+    show_usage ""
+fi
+
+snippet="$SNIPPETS/$1$EXT"
+filename=${2:-}
+
+# if [ "$filename" == "" ] ; then
+#     show_usage "Missing filename"
+# fi
+
+if [ ! -f "$snippet" ] ; then
+    emergency "Snippet '$snippet' does not exist"
+fi
+
+# and replace \$ with just $
+DATA=$(xml_grep --cond=content --nowrap --text_only "$snippet" |sed 's/\\\$/$/g')
+
+if [ "$filename" == "" ] ; then
+    echo "$DATA"
+else
+    ( echo "$DATA" > "$filename"  ) 2>/dev/null
+    if [ "$?" == "1" ] ; then
+        emergency "Could not create file $filename"
+    fi
+    # is there a command to run?
+    cmd=$(grep -E '\-\- exec:' "$snippet" | awk -F'--' '{print $2}'|awk -F'exec:' '{print $2}') || true
+    if [ "$cmd" != "" ] ; then
+        debug "running '$cmd \"$filename\"'"
+        # run it
+        $cmd "$filename"
+    fi
+fi
+
+if [[ -f "$filename" && "$EDIT" == "1" ]] ; then
+    subl "$filename"
+fi

@@ -1,0 +1,100 @@
+#!/bin/bash
+# notify
+
+DISPLAY=:0
+
+# include the standard library functions
+. "$HOME/bin/include/script_base"
+
+TIME=60
+ICON_BASE="/usr/share/icons/gnome/48x48/"
+ICON="monkey"
+
+# ---------------------------------------------------------------------------
+# setup HELP for show_usage
+
+export HELP="notify
+
+    display a notification message on screen
+
+    usage:  [-h] [mesg] [weblink]
+
+    -h | --help      This help
+    -t | --time      Time to display default 60 seconds
+    -i | --icon      Icon to use, taken from /usr/share/icons/gnome/48x48
+    -v | --verbose   verbose output
+
+"
+
+# ---------------------------------------------------------------------------
+# clean up things whenever the script completes
+cleanup() {
+    echo ""
+}
+trap cleanup EXIT
+
+# -----------------------------------------------------------------------------
+# find first icon matching a pattern
+find_icon() {
+    icon=$1
+    match=$(find "$ICON_BASE" -name "*$icon*" | head -1)
+    echo "$match"
+}
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+# debug off
+export LOG_LEVEL=0
+
+# http://stackoverflow.com/questions/402377/using-getopts-in-bash-shell-script-to-get-long-and-short-command-line-options#402410
+# NOTE: This requires GNU getopt.
+# need to mention both short (-o) and long (--options) here
+# trailing : shows a parameter is required
+# TEMP=$(getopt -o vh --long verbose,help,cachedir: -n "$PROGRAM" -- "$@" 2>/dev/null)
+TEMP=$(getopt -o vht:i: --long verbose,help,time:,icon: -n "$PROGRAM" -- "$@" 2>/dev/null)
+
+# if any parameters were bad
+if [ $? != 0 ] ; then show_usage 'Bad Parameters' ; fi
+
+# Note the quotes around `$TEMP': they are essential!
+eval set -- "$TEMP"
+
+while true; do
+    case "$1" in
+    -v | --verbose )  LOG_LEVEL=7
+    set_verbose 1
+    shift
+    ;;
+    -h | --help ) show_usage ''
+    ;;
+    -t | --time) TIME=$2
+    shift 2
+    ;;
+    -i | --icon) ICON=$2
+    shift 2
+    ;;
+    * ) break ;;
+    esac
+done
+# tidy up command line
+shift
+
+ICON=$(find_icon "$ICON")
+
+# ---------------------------------------------------------------------------
+#  now start the main program
+debug " started"
+
+notify() {
+    msg=$1
+    link=${2:-}
+    notify-send -t "$TIME" -i "$ICON" -c "transfer" "$msg" "$link"
+    verbose "msg $msg link $link"
+}
+
+
+MSG=$1
+LINK=${2:-}
+
+notify "$MSG" "$LINK"

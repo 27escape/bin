@@ -1,0 +1,56 @@
+#!/bin/bash
+# find all files in current directory, passed file or directory and find
+# and install any use'd perl modules
+
+# include library functions
+. $HOME/bin/include/script_base
+
+# ---------------------------------------------------------------------------
+# setup help for show_usage
+HELP="
+    find all files in current directory, passed file or directory and install
+    any use'd perl modules
+
+    $PROGRAM  [dir|file]
+"
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+while getopts “h” OPTION ; do
+    case $OPTION in
+        h) show_usage
+            exit 1
+            ;;
+      #   u) UPDATE=1
+      #       ;;
+    esac
+done
+# remove any options we used
+shift $(($OPTIND -1))
+
+dir=$1
+
+if [ "$dir" == "" ] ; then
+    echo_stderr "Assuming current dir"
+    dir="./"
+fi
+
+# potentially we can process a single file
+if [ -f "$dir" ] ; then
+    for module in `grep '^use ' "$dir" |awk '{print $2}' | tr -d ';' |sort|uniq |grep -vE "^5|^v5|base|^feature|^warning|^strict|^parent|^constant|^base|^Data::Dumper"`  ; do
+        cpanm $module
+    done
+    exit ;
+fi
+
+if [ ! -d "$dir" ] ; then
+    show_usage "ERROR: Invalid directory '$dir'"
+fi
+
+cd "$dir"
+
+# now do the find and install
+for module in `ack '^use ' *|awk '{print $2}' | tr -d ';' |sort|uniq |grep -vE "^5|^v5|base|^feature|^warning|^strict|^parent|^constant|^base|^Data::Dumper"` ; do
+    cpanm $module
+done

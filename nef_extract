@@ -1,0 +1,195 @@
+#!/bin/bash
+# extract JPG images from NEF and create some useful sizes
+# read this http://www.howtogeek.com/204228/why-does-every-camera-put-photos-in-a-dcim-folder/
+# to get info about DCIM
+# ufraw-batch and imagemagick are required
+
+# extract and clean, leaves image dark
+# ufraw-batch --wb=auto --exposure=auto --base-curve=camera --out-type=jpeg --output=file1.jpg DSC_1158.NEF
+# get embedded thumbnail
+# ufraw-batch --embedded-image DSC_1158.NEF
+
+# stuff for the webpages
+# new http://alistapart.com/article/learning-from-lego-a-step-forward-in-modular-web-design
+# http://photoswipe.com/
+# http://fotorama.io/customize/options/
+
+# include the standard library functions
+. "$HOME/bin/include/script_base"
+
+GOOD_COLOR="green"
+BAD_COLOR="red"
+
+# ---------------------------------------------------------------------------
+# setup HELP for show_usage
+
+export HELP="Do something with program
+
+    usage:  [-h]
+
+        -h    This help
+        -v    Enable verbose output
+        -d    Directory to obtain the images
+        -o    Where extracted images should be placed
+        -r    replace image if already exists
+        -b    use blinkstick
+"
+
+# ---------------------------------------------------------------------------
+# clean up things whenever the script completes
+cleanup() {
+    echo ""
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# flash the blink strip in a percent bar style
+INDEX=1
+perc_bar() {
+    if [ "$BLINK" != "" ] ; then
+
+        val=${1:-}
+        if [ -n "$val" ] ; then
+            if [ "$val" == "done" ] ; then
+                stick -d strip -m 3 -c "$GOOD_COLOR"
+            else
+                stick -d strip -m 3 -c "$BAD_COLOR"
+            fi
+        else
+            stick -d strip -i "$SRCNDEX" -c "$GOOD_COLOR"
+
+            INDEX=$((INDEX + 1))
+            INDEX=$((INDEX % 9))
+            if [ $SRCNDEX -eq 0 ] ; then
+                stick -d strip -m 3 -c "$BAD_COLOR"
+                INDEX=1
+            fi
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# variables used
+# debug off
+export LOG_LEVEL=0
+
+DIR=""
+OUTDIR=""
+REPLACE=""
+BLINK=""
+VERBOSE=""
+
+# -----------------------------------------------------------------------------
+# set_filetime() {
+#     source=$1
+#     file=$2
+#     # maintain the same file time/date as the original
+#     touch -r "$source" "$file"
+#     if [[ $file =~ .jpg ]] ; then
+#         # now make the exif time the same as the filetime
+#         jhead -q -mkexif "$file"
+#     fi
+# }
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+while getopts "hvd:o:rb" OPTION ; do
+    case $OPTION in
+    h) show_usage ''
+        ;;
+    v) LOG_LEVEL=7
+        set_verbose 1
+        # allow passing verbose to child scripts
+        VERBOSE="-v"
+        ;;
+    d) DIR=$OPTARG
+        ;;
+    o) OUTDIR=$OPTARG
+        ;;
+    r) REPLACE=1
+        ;;
+    b) BLINK="yes"
+        ;;
+    *) show_usage ''
+        ;;
+    esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
+# ---------------------------------------------------------------------------
+#  now start the main program
+debug " started $PROGRAM"
+
+if [ "$OUTDIR" == "" ] ; then
+    emergency "output dir is required"
+else
+    # note negative matching, if its not a full path, then make it one
+    # ignoring any ~
+    if [[ ! $OUTDIR =~ ^/  &&  ! $OUTDIR =~ ^~  ]] ; then
+        cur=$(pwd)
+        OUTDIR="$cur/$OUTDIR"
+        verbose "Altering outdir to $OUTDIR"
+    fi
+    if [ ! -d "$OUTDIR" ] ; then
+        mkdir -p "$OUTDIR" 2>/dev/null
+        if [ "$?" == "1" ] ; then
+            emergency "Could not create output directory '$OUTDIR'"
+        fi
+    fi
+fi
+
+if [ "$DIR" == "" ] ; then
+    emergency "source dir is required"
+else
+    if [ ! -d "$DIR" ] ; then
+        emergency "Source directory '$DIR' does not exist"
+    fi
+fi
+
+ORIGINALS="$OUTDIR/originals"
+# we will be copying the orginal images
+if [ ! -d "$ORIGINALS" ] ; then
+    mkdir -p "$ORIGINALS" 2>/dev/null
+fi
+perc_bar "starting"
+
+todo=0
+completed=0
+for SRC in $DIR/*NEF ; do
+    ((todo++))
+done
+
+for SRC in $DIR/*NEF ; do
+    debug "processing $SRC"
+    fname=$(basename "$SRC" .NEF)
+    NEF="$ORIGINALS/$fname.NEF"
+    FULL="$OUTDIR/$fname.JPG"
+
+    # we need to preserve the time
+    cp -au "$SRC" "$NEF"
+
+    debug "  generating JPGs"
+
+    if [[ -n $REPLACE || ! -f "$FULL" ]] ; then
+        # echo "$FULL"
+        nef2jpg $VERBOSE "$SRC" "$FULL"
+        # maintain the same file time/date as the original
+        # set_filetime "$NEF" "$FULL"
+        perc_bar
+    fi
+    if [ -f "$FULL" ] ; then
+        ((completed++))
+    fi
+    perc=$(percent $completed $todo)
+    # echo "$perc"
+    # echo "$perc" | dialog --gauge "($completed / $todo) $FULL" 10 70 "$perc"
+    percentbar $completed $todo "($completed / $todo)"
+
+done
+clear
+echo "Completed ( $completed / $todo) $perc%"
+
+# all done
+perc_bar "done"

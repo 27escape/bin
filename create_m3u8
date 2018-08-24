@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+SOURCEFILE=$1
+OUTPUT=$2
+
+if [ !-d $OUTPUT ]; then
+    echo "./create_m3u8 <mp4file> <outputdirectory>";
+    exit 255;
+fi
+
+ffmpeg -i $SOURCEFILE -profile:v baseline -strict experimental -f hls $OUTPUT/index.m3u8

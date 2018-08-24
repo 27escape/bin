@@ -1,4 +1,4 @@
-#!/bin/env perl
+#!/usr/bin/env perl
 # parallel ping
 # (c) kevin Mulholland 2012, moodfarm@cpan.org
 # this code is released under the Perl Artistic License

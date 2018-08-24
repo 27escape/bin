@@ -2,6 +2,21 @@
 # PODNAME: td2pdf - convert a plaintasks file into a PDF
 # ABSTRACT: convert a plaintasks file into a PDF, using markdown and my ct2 and regen scripts
 
+## https://metacpan.org/pod/DBD::Chart has some gantt stuff
+## timelines https://developers.google.com/chart/interactive/docs/gallery/timeline
+## gantt http://www.jsgantt.com/jsgantt_exExternalXML.html
+## https://github.com/robicch/jQueryGantt (http://gantt.twproject.com/)
+## https://github.com/mbielanczuk/jQuery.Gantt
+## https://github.com/thegrubbsian/jquery.ganttView
+
+## donuts https://developers.google.com/chart/interactive/docs/gallery/timeline
+## gauge https://developers.google.com/chart/interactive/docs/gallery/gauge
+
+# gantt/timeline may need to use http://search.cpan.org/~bricas/DateTime-BusinessHours-2.03/lib/DateTime/BusinessHours.pm
+
+# kanban swimlanes, not started, started, completed, verified?
+# ideas, to do, doing, done
+
 =head1 NAME
 
 td2pdf
@@ -19,7 +34,6 @@ convert a plaintasks file into a PDF, using markdown and my ct2 and regen script
 
 =cut
 
-#
 # (c) kevin mulholland, moodfarm@cpan.org
 # this code is released under the Perl Artistic License
 
@@ -29,34 +43,371 @@ use warnings ;
 use App::Basis ;
 use Path::Tiny ;
 
-my $started_color = 'steelblue' ; #teal' ;  # '#6fae7f' 
-
 # -----------------------------------------------------------------------------
 
-sub button {
-    my ($state, $color, $text) = @_ ;
+my %state2status = (
+    'x' => 'done',
+    '+' => 'done',
+    '>' => 'active',
+    ' ' => 'notstarted',
+    '~' => 'postponed',
+    '-' => 'cancelled',
+    '?' => 'unknown',
+    '*' => 'bullet',       # special :)
+) ;
 
-    return "<span style='font-weight:bold; border: 1px solid $color;font-size:50%;" .
-        "border-radius:5px;" .
-        "color: white;background-color: $color;'>&nbsp;$text&nbsp;</span>";
-        # "border-radius:15px;" .
-    # return "<a class='button $color $state'>$text</a>";
+my %status_colors = (
+    done       => [ '',      '81C784' ],    #green
+    active     => [ '',      'FF5722' ],    # orange
+    notstarted => [ 'black', 'AAAAAA' ],    # grey
+    postponed  => [ 'white', '9575CD' ],    # darkpurple
+    cancelled  => [ 'white', 'crimson' ],
+    unknown    => [ 'black', '26A69A' ],
+) ;
+
+my %status_badge = (
+    done       => '&#10004;',
+    active     => '&#187;',
+    notstarted => '&nbsp;&nbsp;',
+    postponed  => '&#8734;',
+    cancelled  => '&#10008;',
+    unknown    => '?',
+) ;
+
+my @task_states = qw( done started lasted
+    tostart toend critical high low due
+    created cancelled duration postponed time) ;
+my $state_list = join( '|', @task_states ) ;
+
+my $bullet_color = 'grey' ;
+
+
+# -----------------------------------------------------------------------------
+# make sure hex colors work too
+sub _to_hex
+{
+    my $c = shift ;
+
+    if ($c) {
+        $c =~ s/^([0-9a-f])([0-9a-f])([0-9a-f])$/#$1$1$2$2$3$3/i ;
+        $c =~ s/^([0-9a-f]{6})$/#$1/i ;
+    }
+
+    return $c ;
+}
+
+# -----------------------------------------------------------------------------
+# decide on a color for an item
+
+sub _pick_color
+{
+    my ($status) = @_ ;
+
+    my @color = ( 'black', 'pink' ) ;
+    if ($status) {
+        @color    = @{ $status_colors{$status} } ;
+        $color[0] = _to_hex( $color[0] ) ;
+        $color[1] = _to_hex( $color[1] ) ;
+    }
+    return @color ;
 }
 
 # -----------------------------------------------------------------------------
 
-sub badge {
-    my ( $text, $color) = @_ ;
-    return "{{.badge subject='TASK' status='$text' color='$color' size='60'}} " ;
+sub color_style
+{
+    my $status = shift ;
+    my $style  = "" ;
+
+    my @colors = @{ $status_colors{$status} } ;
+
+    $style .= "color: " . _to_hex( $colors[0] ) . ";"
+        if ( $colors[0] ) ;
+    $style .= "background-color: " . _to_hex( $colors[1] ) . ";"
+        if ( $colors[1] ) ;
+
+    return $style ;
 }
 
-my $TASK = badge( '&nbsp;&nbsp;', 'gray') ;
-my $DONE = badge( '✔', 'green') ; # ✓
-my $AXE = badge( '✘', 'red',);
-my $STARTED = badge( '>', $started_color,);
+sub color_style_fg
+{
+    my $status = shift ;
+    my $style  = "" ;
 
-my @task_states = qw(done started lasted tostart toend critical high low due created cancelled duration) ;
-my $state_list = join( '|', @task_states) ;
+    my @colors = @{ $status_colors{$status} } ;
+
+    $style .= "color: " . _to_hex( $colors[1] ) . ";"
+        if ( $colors[0] ) ;
+
+    return $style ;
+}
+
+# -----------------------------------------------------------------------------
+
+sub _make_colors
+{
+    my $status = shift ;
+    my @colors = _pick_color($status) ;
+
+    my $c
+        = "#"
+        . ( $colors[0] ? $colors[0]    : '' )
+        . ( $colors[1] ? ".$colors[1]" : '' ) ;
+
+    $c =~ s/##/#/ ;
+    $c =~ s/\.#/./ ;
+
+    return $c ;
+}
+
+# -----------------------------------------------------------------------------
+
+sub _rebuild_line
+{
+    my ( $space, $state, $text, $bold ) = @_ ;
+
+    my $status = $state2status{$state} ;
+    my $style  = "" ;
+    my $badge  = "" ;
+
+    # we may already have processed this line
+    if ( $text =~ /\{\{.badge/ ) {
+        return "$space* $text" ;
+    }
+
+    if ( $state ne '*' ) {
+        my $t     = $status_badge{$status} ;
+        my $color = _make_colors($status) ;
+        $badge
+            = "{{.badge subject='ITEM' status='$t' color='$color' size='70'}} "
+            ;
+    }
+
+    if ( $status eq 'bullet' ) {
+        $style = "color:$bullet_color;font-style:italic" ;
+    } else {
+        # $style = color_style_fg($status) ;
+        $style .= "font-weight:bold;" if ($bold) ;
+        $style .= "text-decoration: line-through;"
+            if ( $status eq 'cancelled' ) ;
+    }
+
+    return "$space* $badge <span style='$style'>$text</span>" ;
+}
+
+# -----------------------------------------------------------------------------
+# the status map is just a colored mind map
+# its creates the status of each section
+
+sub build_statusmap
+{
+    my ($data)      = @_ ;
+    my $out         = "" ;
+    my $insection   = 0 ;
+    my $status      = "" ;
+    my $base_indent = "" ;
+    my $in_fence    = 0 ;
+    my $task_info   = "## Activities\n\n" ;
+
+    foreach my $line ( split( /\n/, $data ) ) {
+        my $add_map = "" ;
+        # trim
+        $line =~ s/\s+$// ;
+        if ( !$line ) {
+            $out .= "\n" ;
+            next ;
+        }
+
+        # if starting a titled section, we need to end the map
+        if ( $line =~ /^#/ && $insection ) {
+            $status .= "\n~~~~\n\n$task_info" ;
+            $out =~ s/%MAP%/$status/sm ;
+            $insection = 0 ;
+        }
+
+        # fenced code blocks should not be checked
+        if ( $line =~ /^~~~~\{/ ) {
+            $in_fence = 1 ;
+        }
+
+        if ( !$in_fence ) {
+
+            if ( $line =~ /:$/ ) {
+                # sub sections are just considered to be nodes
+                if ( $insection && $line !~ /^\s/ ) {
+                    $status .= "\n~~~~\n\n$task_info" ;
+                    $out =~ s/%MAP%/$status/sm ;
+                    $insection = 0 ;
+                }
+                if ( !$insection ) {
+                    $add_map   = "\n\n\%MAP\%\n" ;
+                    $insection = 1 ;
+                    # reset the status
+                    $status
+                        = "## Status\n\n~~~~{.mindmap shapes='box' scheme='blue'}\n"
+                        ;
+                    $base_indent = "" ;
+                }
+            }
+            if ($insection) {
+                my $check = $line ;
+                if ( $check =~ /:$/ ) {
+                    if ( $check =~ /^\s/ ) {
+                        $check =~ s/^(\s+)(.*):$/$1 [ ] $2/ ;
+                        $base_indent = $1 ;
+                    } else {
+                        $check =~ s/^(.*):$/[ ] $1/ ;
+                        $base_indent = "" ;
+                    }
+                } else {
+                    $base_indent = "    " ;
+                }
+                $check =~ s/\@.*// ;
+                # $check =~ s/\s?// ;
+                # say STDERR "check '$check'" ;
+                my ( $spaces, $node ) = ( $check =~ /^(\s+)?(\S.*)/ ) ;
+                # remove mindmap comments
+                $node =~ s/\s:.*// ;
+
+
+                my $indent = "" ;
+
+                $spaces = length( $spaces || "" ) ;
+                if ( $spaces > 0 ) {
+                    $spaces
+                        = int( $spaces / 4 ) + ( $spaces % 4 == 0 ? 0 : 1 ) ;
+                    # $spaces-- if( $spaces) ;
+                    $indent = "    " x $spaces ;
+                }
+
+                # bullets are ignored
+                if ( $node !~ /^\*/ && $node =~ s/^\[(.)\]// ) {
+                    my $state = $1 ;
+                    $state = '>' if ( $line =~ /\@started/ && !$state ) ;
+                    $node =~ s/\s+$// ;    # trim trailing space
+                    $node =~ s/^\s+// ;    # trim leading space
+
+                    # root node should be in bold
+                    if ( $base_indent eq "" ) {
+                        $node = "**$node**" ;
+                    }
+
+                    $node .= " " . _make_colors( $state2status{$state} ) ;
+                    # remove color part that includes a hash already
+                    # $node =~ s/##/#/ ;
+                    $status .= $base_indent . $indent . "* $node\n" ;
+                }
+            }
+        }
+        $out .= "$line\n" ;
+        # end the fence
+        $in_fence = 0 if ( $line eq '~~~~' ) ;
+
+        $out .= $add_map if ($add_map) ;
+    }
+    # if we get to the end and there is something still to replace
+    if ($status) {
+        $status .= "\n~~~~\n\n$task_info" ;
+        $out =~ s/%MAP%/$status/sm ;
+    }
+
+    return $out ;
+}
+
+# -----------------------------------------------------------------------------
+
+sub build_task_info
+{
+    my ($data)  = @_ ;
+    my $out     = "" ;
+    my $inblock = 0 ;
+
+    # ordering of replacements is important!
+    foreach my $line ( split( /\n/, $data ) ) {
+        # ignore any fenced code blocks
+        if ( $line =~ /^~~~~/ ) {
+            $out .= "$line\n" ;
+            if ($inblock) {
+                $inblock = 0 ;
+                next ;
+            }
+            $inblock = 1 ;
+            next ;
+        }
+        if ($inblock) {
+            $out .= "$line\n" ;
+            next ;
+        }
+
+        # comments go in italic
+        $line =~ s/\s:(.*)/ *- $1*/ ;
+
+        $line =~ s|^(#+) |$1# | ;
+        # change plaintask sections to markdown ones
+        $line =~ s|^(\w.*?):|## $1| ;
+        # change my plaintask header to a yaml header
+        $line =~ s|^:(\w+) |$1: | ;
+        # change my plaintask header to a yaml header
+        # replace standard bullets with gray ones
+        $line
+            =~ s|^\*\s+(.*)|* <span style='color:$bullet_color;font-style:italic'>$1</span>|
+            ;
+
+        # replace @started with an active node
+        $line =~ s|\[ \](.*?)\@started|[>] $1| ;
+
+        # top level items in bold
+        $line =~ s|^\[(.*?)\]\s+(.*)|_rebuild_line( '', $1,$2, 1)|e ;
+        # normal item
+        $line =~ s|^(\s+)\[(.*?)\]\s+(.*)|_rebuild_line( $1,$2, $3)|e ;
+        # standard bullet point
+        $line =~ s|^(\s+)\*\s+(.*)|_rebuild_line( $1,'*', $2)|e ;
+
+        # lasted is a duration
+        $line =~ s/\@(lasted|duration)\s?\((.*?)\)/[duration: $2]/g ;
+        $line =~ s/\@remaining\s?\((.*?)\)/[remaining: $1]/g ;
+        $line =~ s/\@(postponed|due|tostart)(\s?\(.*?\))?//g ;
+
+        # reformat the done/start etc notes
+        $line =~ s/\@($state_list)\s?\((\d{4}-\d{2}-\d{2})\)/[$1: $2]/g ;
+
+        # special remove time related info, should fix items above
+        # this is easier for experimentation
+
+        $line =~ s/\[\w+:.*?\]//g ;
+
+        $out .= "$line\n" ;
+    }
+
+    return $out ;
+}
+
+# -----------------------------------------------------------------------------
+# build a key to the colors used
+
+sub _key_table
+{
+
+    my $out = "## Key to colors used
+
+<table border='1' width='99%' class='box'><tr>" ;
+
+    foreach my $k ( sort keys %status_colors ) {
+        my @colors = @{ $status_colors{$k} } ;
+        my $style  = "" ;
+
+        $style .= "color: " . _to_hex( $colors[0] ) . ";"
+            if ( $colors[0] ) ;
+        $style .= "background-color: " . _to_hex( $colors[1] ) . ";"
+            if ( $colors[1] ) ;
+
+        $out .= "<td style='$style'>$k</td>" ;
+    }
+
+    $out .= "</tr></table>\n" ;
+    return $out ;
+}
+
 
 # -----------------------------------------------------------------------------
 # main
@@ -67,9 +418,7 @@ my %opt = init_app(
     help_text =>
         "convert a plaintasks file into a PDF, using markdown and my ct2 and regen scripts",
     help_cmdline => "plaintasks_file",
-    options      => {
-        'clean|c'   => 'Force a clean build of the PDF',
-        },
+    options      => { 'clean|c' => 'Force a clean build of the PDF', },
     #log_file => "your-logfile",
 ) ;
 
@@ -79,72 +428,34 @@ $td = fix_filename($td) ;
 show_usage("You need to pass a valid filename") if ( !-f $td ) ;
 
 my $outfile = $td ;
-$outfile =~ s/\.td$/.md/i ;
-$outfile =~ s/\.md$/-project.md/ if( $outfile !~ /-project/) ;
+$outfile =~ s/\.td$/.mdown/i ;
+# don't call them .md as my auto processor will process it
+$outfile =~ s/\.md$/-project.mdown/ if ( $outfile !~ /-project/ ) ;
+my $filedata = path($td)->slurp_utf8() ;
+my $outdata  = $filedata ;
 
-my $data = path($td)->slurp_utf8() ;
+$outdata = build_statusmap($outdata) ;
+$outdata = build_task_info($outdata) ;
+# $outdata .= build_key() ;
+$outdata .= _key_table() ;
 
-my $outdata = "" ;
-
-# ordering of replacements is important!
-foreach my $line ( split( /\n/, $data ) ) {
-    $line =~ s|^(#)+ |$1# | ;
-    $line =~ s|^(\w.*?):|## $1| ;
-    $line =~ s|^:(\w+) |$1: | ;
-    # replace standard bullets with gray ones
-    $line
-        =~ s|^\*\s+(.*)|* <span style='color:gray;font-style:italic'>$1</span>|
-        ;
-
-    # this is a bit sketchy and a mess, but if the line has an @started in it then we
-    # will modify any [ ] entry, unless there is a value inside that 
-    if( $line =~ m|\[ \].*?\@started|) {
-        $line =~ s|\[ \]|[>]| ;             # pretend we have a new symbol for started
-    }
-
-    $line =~ s|^\[ \]\s+(.*)|* $TASK <span style='color:black'>$1</span>| ;
-    $line =~ s!^\[(x|\+)\]\s+(.*)!* $DONE <span style='color:green'>$2</span>! ;
-    # $line =~ s|^\[+\]\s+(.*)|* $DONE <span style='color:green'>$1</span>| ;
-    $line =~ s|^\[>+\]\s+(.*)|* $STARTED <span style='color:$started_color'>$1</span>| ;
-    $line
-        =~ s|^\[-\]\s+(.*)|* $AXE <span style='color:#ff3300;text-decoration: line-through;'>$1</span>|
-        ;
-
-# this is crap coding, but I cannot quickly figure out how to accomodate an empty $1
-    $line
-        =~ s|^(\s+)\*\s+(.*)|$1* <span style='color:gray;font-style:italic'>$2</span>|
-        ;
-
-    $line =~ s|^(\s+)\[ \]\s+(.*)|$1* $TASK <span style='color:black'>$2</span>| ;
-    $line =~ s!^(\s+)\[(x|\+)\]\s+(.*)!$1* $DONE <span style='color:green'>$3</span>! ;
-    # $line =~ s|^(\s+)\[+\]\s+(.*)|$1* $DONE <span style='color:green'>$2</span>| ;
-    $line =~ s|^(\s+)\[>\]\s+(.*)|$1* $STARTED <span style='color:$started_color'>$2</span>| ;
-    $line
-        =~ s|^(\s+)\[-\]\s+(.*)|$1* $AXE <span style='color:#ff3300;text-decoration: line-through;'>$2</span>|
-        ;
-
-    $line =~ s|(\(\d+[dwm]\))|**$1**|g ;
-    # reformat the done/start etc notes
-    $line =~ s/\@($state_list)\s?\((\d{4}-\d{2}-\d{2})\)/[$1: $2]/g ;
-    # lasted and due are durations
-    $line =~ s/\@(lasted|due|duration)\s?\((.*?)\)/[duration: $2]/g ;
-
-    # $line =~ s/\@(done|started|lasted|tostart)\s?\(/$1(/g ;
-    $line
-        =~ s|(\@\w+)|<span style='border: 1px solid goldenrod;background-color:cornsilk;font-size:75%;'>&nbsp;$1 &nbsp;</span>|g
-        ;
-
-    $outdata .= "$line\n" ;
-}
+# globally highlight people
+$outdata
+    =~ s|(\@\w+)|<span style="border: 1px solid goldenrod;background-color:cornsilk;color: black;font-size:75%;padding:-2px;">&nbsp;$1 &nbsp;</span>|gsm
+    ;
 
 path($outfile)->spew_utf8($outdata) ;
+
+# path('/tmp/test.md')->spew_utf8($outdata) ;
+
 my $clean = $opt{clean} ? "-c" : "" ;
 my ( $code, $out, $err ) = run_cmd("regen $clean '$outfile'") ;
-print $out ;        # $out will already have a LF at the end
+
 if ($err) {
-    say "$err - check $outfile" ;
+    say STDERR "$err - check $outfile" ;
 } else {
     # remove the intermediate markdown file
+    system("cp $outfile /tmp") ;
     unlink $outfile ;
 }
 

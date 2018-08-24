@@ -1,0 +1,66 @@
+#!/usr/bin/env perl
+# PODNAME: color
+# ABSTRACT: perform some color operations, like convert to hex, lighten, darken etc
+
+=head1 NAME
+
+color
+
+=head1 SYNOPSIS
+
+    >  color ..options..
+
+    to get full help use
+    > color --help
+
+=head1 DESCRIPTION
+
+perform some color operations, like convert to hex, lighten, darken etc
+
+=cut
+
+#
+# (c) yourname, your@email.address.com
+# this code is released under some License
+
+use 5.10.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+use WebColors ;
+
+# -----------------------------------------------------------------------------
+# main
+
+my $program = get_program() ;
+
+my %opt = init_app(
+    help_text =>
+        "perform some color operations, like convert to hex, lighten, darken etc, outputs hex color",
+    help_cmdline => "Color to action upon, 'list' to get all known colors ",
+    options      => {
+        'verbose|v' => 'Dump extra useful information',
+        'lighten|l' => 'lighten',
+        'darken|d'  => 'darken',
+    },
+) ;
+
+my $color = $ARGV[0] ;
+
+show_usage("Missing color") if ( !$color ) ;
+
+$color = lc($color) ;
+
+if ( $color eq 'list' ) {
+    say join( "\n", list_webcolors() ) ;
+    exit 0 ;
+}
+
+if ( $opt{lighten} ) {
+    say "#" . lighten($color) ;
+} elsif ( $opt{darken} ) {
+    say "#" . darken($color) ;
+} else {
+    say "#" . colorname_to_hex($color) ;
+}
+

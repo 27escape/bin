@@ -1,109 +1,215 @@
 #!/bin/bash
 # create prince PDF version of the markdown file
 
+CT2="ct2"
+PRINCE="-p"  # "-p" "-w"
+# CT2="/usr/bin/perl5.18.2 /usr/local/bin/ct2"
+
+# get the standard functions
+# shellcheck source=/dev/null
+. $HOME/bin/include/script_base
+# we know we use these YAML fields, set them up to reduce shellcheck warnings
+YAML_date=""
+YAML_version=""
+YAML_target=""
+YAML_format=""
+
 # ---------------------------------------------------------------------------
+# shellcheck source=/dev/null
+HELP="usage: $PROGRAM option markdown_file
 
-function usage() {
-  echo "
-  usage: $0 option 
+    regenerate markdown document into PDF
 
-  regenerate markdown document into PDF
-
-  OPTIONS:
-    -h    this help
-    -e    will launch evince to preview it
-    -c    create a cleanly built version
+    OPTIONS:
+        -h    this help
+        -c    create a cleanly built version
+        -v    be verbose about things
 
 "
-}
 
 # ---------------------------------------------------------------------------
 
-function check_version() {
-  fname=$1
+check_version() {
+    fname=$1
+    fdate=$2
+    version=$3
 
-  fdate=`grep -E '^date: ' $fname | awk '{print $2}'| head -1`
-  echo $fdate |grep -qE "[0-9]{4}-[0-9]{2}-[0-9]{2}"
-  if [ "$?" != "0" ] ; then
-    echo "ERROR: keyword date value does not seem to be valid"
-  fi
-
-  version=`grep -E '^version: ' $fname | awk '{print $2}'|head -1`
-
-  if [ "$version" != "" ] ; then
-    vdate=`grep -E "^$version " $fname | awk '{print $2}' |head -1`
-    echo $vdate |grep -qE "[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    # fdate=$(grep -E '^date: ' "$fname" | awk '{print $2}'| head -1)
+    # fdate=$YAML_date
+    echo "$fdate" |grep -qE "[0-9]{4}-[0-9]{2}-[0-9]{2}"
     if [ "$?" != "0" ] ; then
-      echo "ERROR: version date part does not seem to be valid"
+        echo "ERROR: keyword date value does not seem to be valid"
+        fdate=""
     fi
 
-    # grep -qE "^$version [0-9]{4}-[0-9]{2}-[0-9]{2}" $fname
-    grep -qE "^$version $fdate" $fname
-    if [ "$?" != "0" ] ; then
-      echo "ERROR: Could not match version number and release date"
+    # version=$(grep -E '^version: ' "$fname" | awk '{print $2}'|head -1)
+    # version=$YAML_version
+
+    # if we no not have a version, try and find the first version used in a version table
+    if [ "$version" != "" ] ; then
+        vdate=$(grep -E "^$version " "$fname" | awk '{print $2}' |head -1)
+        echo "$vdate" |grep -qE "[0-9]{4}-[0-9]{2}-[0-9]{2}"
+        if [ "$?" != "0" ] ; then
+            echo "ERROR: version date part does not seem to be valid"
+        fi
+
+        # grep -qE "^$version [0-9]{4}-[0-9]{2}-[0-9]{2}" $fname
+        grep -qE "^$version $fdate" "$fname"
+        if [ "$?" != "0" ] ; then
+            echo "ERROR: Could not match version number and release date"
+        fi
     fi
-  fi
 }
 
 # ---------------------------------------------------------------------------
 
 CLEAN=""
+export VERBOSE=""
+VFLAG=""
 # process command line args
 
-while getopts “hec” OPTION
-do
-  case $OPTION in
-    h) usage
-      exit 1
-      ;;
-    e) LAUNCH="evince "
-      ;;
+while getopts "hcv" OPTION ; do
+    case $OPTION in
+    h) show_usage
+        exit 1
+        ;;
     c) CLEAN="-c"
-      ;;
-    *) usage
-      exit 1
-      ;;
-  esac
+        ;;
+    v) VERBOSE=1
+        VFLAG="-v"
+        set_verbose 1
+        ;;
+    *) show_usage
+        exit 1
+        ;;
+    esac
 done
 # remove the options we used
 shift $(($OPTIND -1))
 
 filepath="$1"
+outpath=${2:-}
 # echo "file $filepath"
+yamlfields "$filepath"
 
+# check if this document should not be re-generated
+# head -20 "$filepath"| grep -Pq '^format:\s+none'
+# if [ "$?" == "0" ] ; then
+if [ "$YAML_format" == "none" ] ; then
+    exit
+fi
+
+# find out what sort of extension it really is
+# .td/.wbs files get converted into .mdown so that the auto process does
+# not try to process them
+ext=""
 echo "$filepath" |grep -Eq '\.md$'
 if [ "$?" == "0" ] ; then
-  # should we write it to a PDF dir
-  b=`dirname $filepath`
-  f=`basename $filepath .md`
-  PDF="$b/PDF"
-  DOC="$b/docs"
-  if [ -d "$PDF" ] ; then
-    OUTPUT="$PDF/"
-  else
-    if [ -d "$DOC" ] ; then
-      OUTPUT="$DOC/"
-    fi
-  fi
-  check_version $filepath
-
-  # if we have a version number append it to the end
-  if [ "$version" != "" ] ; then
-    f="$f-v$version" 
-  fi
-  # build into output dir + filename with version number
-  OUTPUT="$OUTPUT$f.pdf"
-
-  OUT=`ct2 -p $CLEAN "$filepath" -v -o "$OUTPUT"`
-  # only launch if the output file was created
-  if [ "$LAUNCH" != "" -a -f "$OUT" ] ; then
-    # echo "opening $OUT"
-    $LAUNCH "$OUT" &
-  else
-    echo "Procesed to $OUT"
-  fi
+    ext=".md"
 else
-    echo "This does not appear to be a markdown file (.md)"
-    usage
+    echo "$filepath" |grep -Eq '\.mdown$'
+    if [ "$?" == "0" ] ; then
+        ext=".mdown"
+    fi
+fi
+
+if [ "$ext" != "" ] ; then
+    # should we write it to a PDF dir
+    b=$(dirname "$filepath")
+    f=$(basename "$filepath" $ext)
+    PDF="$b/PDF"
+    DOC="$b/docs"
+    BACKUP="$b/backups"
+    if [ ! -d "$BACKUP" ] ; then
+        mkdir -p "$BACKUP" 2>/dev/null
+    fi
+
+    OUTPUT="" # default to current dir
+    if [ -d "$PDF" ] ; then
+        OUTPUT="$PDF/"
+    else
+        if [ -d "$DOC" ] ; then
+            OUTPUT="$DOC/"
+        fi
+    fi
+    check_version "$filepath" "$YAML_date" "$YAML_version"
+
+    # if we want to generate an alternative version of the file
+    # based on the target name
+    if [ "$YAML_target" != "" ] ; then
+        f="$f-$YAML_target"
+    fi
+
+    # get name for latest before we append a version
+    LATEST="$OUTPUT$f-latest.pdf"
+    verbose "Latest should be '$LATEST'"
+
+    # if we have a version number append it to the end
+    if [ "$version" != "" ] ; then
+        f="$f-v$version"
+    else
+        # use the file date as a version then
+        if [ "$fdate" != "" ] ; then
+            f="$f-$fdate"
+        fi
+    fi
+    # build into output dir + filename with version number
+    OUTPUT="$OUTPUT$f.pdf"
+    # replace output name if we have something
+    if [ "$outpath" != "" ] ; then
+        OUTPUT="$outpath"
+    fi
+    verbose "Creating to $OUTPUT"
+    # rename as mdown dow the watcher does not try and PDF it
+    BACKUP="$BACKUP/$f.md.bak"
+
+    verbose "Creating '$OUTPUT'"
+
+    UPDATE=1
+    # test to see if we should do anything with a file
+    # no longer do up to date test, we may be importing files into a master file
+    # if [ "$OUTPUT" -nt "$filepath" ] ; then
+    #   # echo "its up to date"
+    #   UPDATE=0
+    # fi
+    if [ "$CLEAN" == "-c" ] ; then
+        UPDATE=1
+      # echo "we want it clean"
+    fi
+
+    if [ "$UPDATE" -eq "1" ] ; then
+# echo $CT2 -p $CLEAN $VFLAG -o "$OUTPUT" "$filepath"
+        OUT=$($CT2 $PRINCE $CLEAN $VFLAG -o "$OUTPUT" "$filepath")
+        # exit
+        if [ -f "$OUTPUT" ] ; then
+            verbose "Processed to $OUTPUT"
+            cp -f "$filepath" "$BACKUP"
+            rm -f "$LATEST" 2>/dev/null
+            if [ "$?" == "1" ] ; then
+                echo_stderr "could not remove '$LATEST'"
+            fi
+            ln -s "$OUTPUT" "$LATEST" 2>/dev/null
+            if [[ "$?" == "1" && ! -f "$LATEST" ]] ; then
+                # failed to create symlink, will need to copy instead
+                # maybe cos its a windows style drive
+                # echo_stderr "Could not symlink, copying..."
+                cp -af "$OUTPUT" "$LATEST"
+            fi
+
+            # check latest exists, is newer or same time as the source file
+            # only check we can do is that it is not older than the output file
+            if [[ -f "$LATEST" && ! "$LATEST" -ot "$OUTPUT"  ]] ; then
+                notify -i pdf "PDF built" "file://$LATEST"
+            else
+                echo_stderr "Could not copy to latest version '$LATEST'"
+                notify -i warning "Could not copy to latest PDF" "$LATEST"
+            fi
+        else
+            echo_stderr "Could not create create '$OUTPUT'"
+            notify -i error "Could not build" "$OUTPUT"
+        fi
+    fi
+else
+    show_usage "This does not appear to be a markdown file (.md)" 1
     exit 1
 fi

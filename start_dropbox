@@ -1,0 +1,55 @@
+#!/bin/bash
+# start dropbox and restrict its IO and cpu use
+
+PROGRAM=$0
+
+# ---------------------------------------------------------------------------
+function echo_stderr {
+    msg=$1
+    echo "$1" > /dev/stderr
+}
+
+# ---------------------------------------------------------------------------
+
+function show_usage {
+    arg=$1
+    err=$2
+
+    if [ "$err" == "" ] ; then
+        err=1
+    fi
+
+    echo "start dropbox with cpu and io limits
+
+    usage: $PROGRAM [-h]
+
+        -h    This help
+
+        $PROGRAM
+
+"
+    if [ "$arg" != "" ] ; then
+        echo "$arg
+"
+    fi
+    exit $err
+}
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+while getopts “h” OPTION ; do
+    case $OPTION in
+        h) show_usage ''
+        ;;
+        *) show_usage ''
+        ;;
+    esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
+# ---------------------------------------------------------------------------
+#  now start the main program
+
+ionice -c 3 -n 7 dropbox start && cpulimit -b -e dropbox -l 20

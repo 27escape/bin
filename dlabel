@@ -1,0 +1,98 @@
+#!/bin/bash
+# provide consistent way to rename ext3/4 and fat partitions
+# this helps https://help.ubuntu.com/community/RenameUSBDrive
+# (c) kevin mulholland, moodfarm@cpan.org, 2016-04-25
+
+PROGRAM=$0
+EXT_MAX=16
+FAT_MAX=11
+
+# ---------------------------------------------------------------------------
+function echo_stderr {
+    msg=$1
+    echo "$1" > /dev/stderr
+}
+
+# ---------------------------------------------------------------------------
+
+function show_usage  {
+    arg=$1
+    err=$2
+
+    if [ "$err" == "" ] ; then
+        err=1
+    fi
+
+    echo "Rename a drive partition, regardless of format (fat/ext currently supported)
+
+    usage: $PROGRAM [-h] path_to_device name
+        -h    This help
+
+        $PROGRAM /dev/sdb1 "backup_1"
+"
+    if [ "$arg" != "" ] ; then
+        echo "ERROR: $arg
+"
+    fi
+    exit $err
+}
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+while getopts “h” OPTION
+do
+  case $OPTION in
+    h) show_usage ''
+      ;;
+    *) show_usage ''
+      ;;
+  esac
+done
+# remove the options we used
+shift $(($OPTIND -1))
+
+# ---------------------------------------------------------------------------
+#  now start the main program
+# get the params
+DEVICE=$1
+NAME=$2
+
+if [ "$DEVICE" == "" -o "$NAME" == "" ] ; then
+    show_usage "Missing parameters"
+fi
+
+if [ ! -b "$DEVICE" ] ; then
+    show_usage "Invalid device: $DEVICE"
+fi
+
+# find out what sort of filesystem is in use, if any
+FS_TYPE=`udisksctl info -b "$DEVICE" 2>/dev/null | grep IdType | awk '{print $2}'`
+if [ "$?" == "1" ] ; then
+    show_usage "Cannot determine filesystem type: $DEVICE"    
+fi
+
+case $FS_TYPE in
+    vfat ) 
+        length=${#NAME}
+        if [ $length -gt $FAT_MAX ] ; then
+            echo_stderr "name is too long, $FAT_MAX characters only for fat partitions"
+            exit 1
+        fi
+        mlabel -i "$DEVICE" ::"$NAME"
+        ;;
+    ext2 | ext3 | ext4 )
+        if [ $length -gt $EXT_MAX ] ; then
+            echo_stderr "name is too long, $EXT_MAX characters only for ext partitions"
+            exit 1
+        fi
+
+        e2label "$DEVICE" "$NAME"
+        ;;
+    *) echo_stderr "Unhandled partition type: $FS_TYPE"
+        exit 1
+esac
+if [ "$?" == "1" ] ; then
+    echo_stderr "Failed to rename partition $DEVICE to $NAME"    
+    exit 1
+fi

@@ -6,18 +6,15 @@
 
 # v0.1 moodfarm@cpan.org, initial work
 
-use 5.16.0;
-use strict;
-use warnings;
-use App::Basis;
-use Data::Printer;
-use XML::FeedPP;
-use Path::Tiny;
-use Furl;
-use utf8::all;
-# use open qw(:utf8);
-
-# binmode( STDOUT, ":utf8" );
+use 5.16.0 ;
+use strict ;
+use warnings ;
+use App::Basis ;
+use Data::Printer ;
+use XML::FeedPP ;
+use Path::Tiny ;
+use Furl ;
+use YAML::XS qw(Dump) ;
 
 # -----------------------------------------------------------------------------
 
@@ -28,14 +25,15 @@ my %iot_feeds = (
     philosophy => 'http://downloads.bbc.co.uk/podcasts/radio4/iotp/rss.xml',
     religion   => 'http://downloads.bbc.co.uk/podcasts/radio4/iotr/rss.xml',
     science    => 'http://downloads.bbc.co.uk/podcasts/radio4/iots/rss.xml',
-);
+) ;
 
-my $target_dir = "~/googledrive/Shared_Audio/IOT/";
+my $target_dir = "~/IOT/" ;
+my %synopsis   = () ;
 
 # -----------------------------------------------------------------------------
 # main
 
-my $program = get_program();
+my $program = get_program() ;
 
 my %opt = init_app(
     help_text    => "Obtain 'In Our Time' recordings from the BBC",
@@ -46,63 +44,74 @@ my %opt = init_app(
         'target|t=s' => {
             default => $target_dir,
             desc    => 'where to store fetched files',
-        }
+        },
+        'quiet|q' => 'be extra quiet',
     }
-);
+) ;
 
-$opt{target} = fix_filename( $opt{target} );
+$opt{target} = fix_filename( $opt{target} ) ;
 
 # remove any trailing /
-$opt{target} =~ s|/$||;
+$opt{target} =~ s|/$|| ;
 
-path( $opt{target} )->mkpath if ( $opt{fetch} );
+path( $opt{target} )->mkpath if ( $opt{fetch} ) ;
 
-msg_exit("Could not create $opt{target}") if ( !$opt{target} );
+msg_exit("Could not create $opt{target}") if ( !$opt{target} ) ;
 
-if ( $opt{verbose} ) {
-    my $prog = get_program();
-    debug( 'INFO', "prog is '$prog'" );
-}
+my $count   = 0 ;
+my $dlcount = 0 ;
+foreach my $fname ( sort keys %iot_feeds ) {
+    my $source = $iot_feeds{$fname} ;
 
-my $count   = 0;
-my $dlcount = 0;
-foreach my $name ( sort keys %iot_feeds ) {
-    my $source = $iot_feeds{$name};
+    my $dir = "$opt{target}/$fname" ;
+    path($dir)->mkpath if ( $opt{fetch} ) ;
 
-    my $dir = "$opt{target}/$name";
-
-    path($dir)->mkpath if ( $opt{fetch} );
-
-    my $feed = XML::FeedPP->new($source, utf8_flag => 1);
-    say "Title: " . $feed->title();
+    my $feed = XML::FeedPP->new( $source, utf8_flag => 1 ) ;
+    my $title = $feed->title() ;
+    $title =~ s/\.mp3//i ;
+    if ( !$opt{quiet} ) {
+        say "Feed Title: $title" ;
+    }
     foreach my $item ( $feed->get_item() ) {
-        my $name = $item->title();
-        $name =~ s/^.*?:\s+(.*)/$1/;
-        $name =~ s/['"’]//g;
-        $name =~ s/\s/_/g;
-        $name .= ".mp3";
-        $name = lc($name);
-        my $filename = "$dir/$name";
+        $synopsis{$fname}->{ $item->title() } = {
+            date        => $item->pubDate(),
+            description => $item->description(),
+        } ;
 
-        my $title = $item->title();
-        $title =~ s/^.*?:\s+(.*)/$1/;
+        my $name = $item->title() ;
+        $name =~ s/^.*?:\s+(.*)/$1/ ;
+        $name =~ s/['"’]//g ;
+        $name =~ s/[\s\/\\]/_/g ;
+        $name .= ".mp3" ;
+        $name = lc($name) ;
+        my $filename = "$dir/$name" ;
+
+        my $title = $item->title() ;
+        $title =~ s/^.*?:\s+(.*)/$1/ ;
+
+        # seems like the RSS points to a web page and not to a MP3 anymore
+        # so we need to find the mp3 link rather than the original page link
+        my $url = $item->{"media:content"}->{"-url"} ;
+        next if ( !$url ) ;
 
         if ( $opt{fetch} && !-f $filename ) {
 
             my $furl = Furl->new(
                 agent   => 'IOT fetcher',
                 timeout => 10,
-            );
+            ) ;
 
-            my $res = $furl->get( $item->link() );
+            my $res = $furl->get($url) ;
             if ( $res->is_success ) {
-                path("$filename")->spew_raw( $res->content );
+                path("$filename")->spew_raw( $res->content ) ;
             }
         }
-        $dlcount++ if ( -f $filename );
-        say "       " . ( -f $filename ? 'Y ' : 'N ' ) . $title;
-        $count++;
+        $dlcount++ if ( -f $filename ) ;
+        say "       " . ( -f $filename ? 'Y ' : 'N ' ) . $title
+            if ( !$opt{quiet} ) ;
+        $count++ ;
     }
 }
 
-say "$count items ($dlcount)";
+path("$target_dir/synopsis.yaml")->spew_utf8( Dump(%synopsis) ) ;
+say "$count items ($dlcount)" if ( !$opt{quiet} ) ;

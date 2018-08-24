@@ -1,4 +1,4 @@
-#!/bin/env perl
+#!/usr/bin/env perl
 # v0.1 2012-02-21 create nice charts from csv data
 # moodfarm@cpan.org
 
@@ -10,7 +10,7 @@ use Data::Dumper qw(Dumper);
 $Data::Dumper::Terse = 1;
 
 use lib "/opt/inview/perl_lib";
-use App::Basis qw( :delaydb);
+use App::Basis ;
 use Inview::Reports::Chart;
 use Carp qw(croak);
 use File::Slurp ;

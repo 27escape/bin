@@ -1,0 +1,94 @@
+#!/bin/bash
+# convert a markdown file into mediawiki format
+# does not do anything clever with my markdown format
+# best to keep things simple!
+
+# include the standard library functions
+. "$HOME/bin/include/script_base"
+
+# ---------------------------------------------------------------------------
+# setup HELP for show_usage
+
+export HELP="Convert a markdown file to mediawiki format
+
+$PROGRAM input.md [output.wiki]
+
+will normally convert input.md to input.wiki in the same directory as the input file
+unless an output filename is given
+
+    usage:  [-h]
+
+    -h | --help      This help
+    -v | --verbose   verbose output
+
+"
+
+# ---------------------------------------------------------------------------
+# clean up things whenever the script completes
+cleanup() {
+    echo ""
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# process command line args
+
+# debug off
+export LOG_LEVEL=0
+
+# http://stackoverflow.com/questions/402377/using-getopts-in-bash-shell-script-to-get-long-and-short-command-line-options#402410
+# NOTE: This requires GNU getopt.
+# need to mention both short (-o) and long (--options) here
+# trailing : shows a parameter is required
+# TEMP=$(getopt -o vh --long verbose,help,cachedir: -n "$PROGRAM" -- "$@" 2>/dev/null)
+TEMP=$(getopt -o vh --long verbose,help -n "$PROGRAM" -- "$@" 2>/dev/null)
+
+# if any parameters were bad
+if [ $? != 0 ] ; then show_usage 'Bad Parameters' ; fi
+
+# Note the quotes around `$TEMP': they are essential!
+eval set -- "$TEMP"
+
+while true; do
+    case "$1" in
+    -v | --verbose )  LOG_LEVEL=7
+    shift
+    ;;
+    -h | --help ) show_usage ''
+    ;;
+    # --cachedir) CACHE_DIR="$2"
+    #     shift 2 # remove param and data
+    * ) break ;;
+    esac
+done
+# tidy up command line
+shift
+
+# ---------------------------------------------------------------------------
+
+infile=${1:-}
+
+if [[ "$infile" == "" || ! -f "$infile" ]] ; then
+    show_usage "There needs to be a file to operate upon"
+fi
+
+indir=$(dirname "$infile")
+outfile=${2:-}
+if [ "$outfile" == "" ] ; then
+    inf=$(basename "$infile")
+    if [[ $inf =~ ^(.*?)(\.md*?)$ ]] ; then
+        outfile="$indir/${BASH_REMATCH[1]}.wiki"
+    else
+        warn "Could not strip md or.mdown extension from filename"
+        outfile="$indir/$inf.wiki"
+    fi
+fi
+
+pandoc "$infile" -t mediawiki -o "$outfile"
+
+if [ -f "$outfile" ] ; then
+    echo "created $outfile"
+else
+    echo_stderr "There were issues converting $infile to $outfile"
+    exit 1
+fi

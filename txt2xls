@@ -1,4 +1,4 @@
-#!/bin/env perl
+#!/usr/bin/env perl
 # convert a csv like text file into a excel spreadsheet
 # this can be used to either manage proper csv files
 # or unstructured text files that people want in an excel spreadsheet!
