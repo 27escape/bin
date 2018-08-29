@@ -27,6 +27,12 @@ HELP="usage: $PROGRAM option markdown_file
 
 "
 
+call_notify() {
+    if [ -f "$HOME/bin/notify" ] ; then
+        notify $@
+    fi
+}
+
 # ---------------------------------------------------------------------------
 
 check_version() {
@@ -199,14 +205,14 @@ if [ "$ext" != "" ] ; then
             # check latest exists, is newer or same time as the source file
             # only check we can do is that it is not older than the output file
             if [[ -f "$LATEST" && ! "$LATEST" -ot "$OUTPUT"  ]] ; then
-                notify -i pdf "PDF built" "file://$LATEST"
+                call_notify -i pdf "PDF built" "file://$LATEST"
             else
                 echo_stderr "Could not copy to latest version '$LATEST'"
-                notify -i warning "Could not copy to latest PDF" "$LATEST"
+                call_notify -i warning "Could not copy to latest PDF" "$LATEST"
             fi
         else
             echo_stderr "Could not create create '$OUTPUT'"
-            notify -i error "Could not build" "$OUTPUT"
+            call_notify -i error "Could not build" "$OUTPUT"
         fi
     fi
 else
